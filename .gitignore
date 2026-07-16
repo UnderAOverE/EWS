@@ -1,0 +1,133 @@
+# =====================================================================================================
+# Python
+# =====================================================================================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+cover/
+
+# Type checkers / linters
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+.ruff_cache/
+
+# Environments
+.env
+.env.*
+!.env.example
+.venv
+.venv*/
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# uv
+.uv/
+
+
+# =====================================================================================================
+# IDEs & editors
+# =====================================================================================================
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+
+# =====================================================================================================
+# OS
+# =====================================================================================================
+.DS_Store
+Thumbs.db
+desktop.ini
+
+
+# =====================================================================================================
+# Project-local runtime artefacts
+# =====================================================================================================
+# Logs land under var/logs/ (gitignored via `var/` above) but catch the loose case too.
+logs/
+*.log
+
+# Mongo dumps / fixtures
+dumps/
+*.bson
+
+# Sample email previews / generated outputs.
+output/
+
+
+# =====================================================================================================
+# Agent-local-only working notes - kept on disk, not tracked.
+# =====================================================================================================
+.claude/
+CLAUDE.md
+SKILL.md
+CHANGELOG.md
+
+
+# =====================================================================================================
+# Secret-bearing env files - every file under conf/secrets/ is ignored EXCEPT *.example templates.
+# Developer copies the template, fills in real values, and the local copy stays out of the repo.
+# =====================================================================================================
+conf/secrets/*
+!conf/secrets/*.example
+
+
+# =====================================================================================================
+# Archived previous tree - kept on disk for reference, not tracked. Adds to .gitignore only stop NEW
+# files from being staged; the archive snapshot already in git history is preserved.
+# =====================================================================================================
+v2/
