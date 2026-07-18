@@ -42,7 +42,7 @@ from pymongo import ASCENDING
 
 # Internal imports
 
-from apis.models.zelle.records import AuditRecord
+from src.apis.models.zelle.records import AuditRecord
 
 # Local variables
 

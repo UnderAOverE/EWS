@@ -5,16 +5,15 @@
 #
 # ----------------------------------------------------------------------------------------------------#
 #                                                                                                     #
-# File Name     : apis/routes/__init__.py.                                                            #
+# File Name     : src/__init__.py.                                                                    #
 # Date of birth : 2026-07-18.                                                                         #
 # Version       : 1.0.0.                                                                              #
 # Author        : Shane Reddy.                                                                        #
 #                                                                                                     #
-# Explanation   : Routes layer package: thin FastAPI routers grouped per bounded context. Re-         #
-#                 exports the zelle routers under host-app naming (zelle_events_router,               #
-#                 zelle_admin_router) so the host main.py can import and include them alongside       #
-#                 the ose/saas routers per its established pattern.                                   #
-# Dependencies  : apis.routes.zelle.admin, apis.routes.zelle.events.                                  #
+# Explanation   : Package marker for the src root. The host app (fdn-c-amp-fapis-py) imports          #
+#                 every internal module through the src. prefix (from src.apis.routes import ...),    #
+#                 so this repo mirrors that convention exactly for drop-in compatibility.             #
+# Dependencies  : Standard library only (sys).                                                        #
 # Modifications : 2026-07-18 Shane Reddy — Initial version.                                           #
 #                                                                                                     #
 # Contact       : shanevreddy@gmail.com.                                                              #
@@ -25,11 +24,7 @@
 
 
 """
-Routes layer: thin FastAPI routers grouped per bounded context (currently ``zelle``). Handlers
-validate, delegate to services, and translate results — no business logic lives here. The zelle
-routers are re-exported here under host-app naming so the host ``main.py`` can include them the
-same way it includes the ose/saas routers; when the host includes them itself, call
-``register_zelle(..., include_routers=False)``.
+The ``src`` package root, mirroring the host app's ``src.apis.*`` import convention.
 """
 
 
@@ -45,12 +40,7 @@ sys.dont_write_bytecode = True
 
 # Internal imports
 
-from src.apis.routes.zelle.admin import admin_router as zelle_admin_router
-from src.apis.routes.zelle.events import events_router as zelle_events_router
-
 # Local variables
 
-__all__ = ["zelle_admin_router", "zelle_events_router"]
 
-
-# end_apis/routes/__init__.py
+# end_src/__init__.py

@@ -45,17 +45,17 @@ import respx
 
 # Internal imports
 
-from apis.config.zelle import ZelleSettings
-from apis.models.zelle.enums import HoldMode
-from apis.models.zelle.errors import (
+from src.apis.config.zelle import ZelleSettings
+from src.apis.models.zelle.enums import HoldMode
+from src.apis.models.zelle.errors import (
     AuthConfigError,
     RateLimitedError,
     UpstreamRejectedError,
     UpstreamUnavailableError,
     UpstreamUncertainError,
 )
-from apis.models.zelle.southbound import EwsScheduleRequest
-from apis.services.zelle.zoms_client import ZomsClient
+from src.apis.models.zelle.southbound import EwsScheduleRequest
+from src.apis.services.zelle.zoms_client import ZomsClient
 
 # Local variables
 

@@ -13,8 +13,7 @@ ignore = ["E402"]
 [tool.mypy]
 python_version = "3.12"
 strict = true
-mypy_path = "src"
-packages = ["apis", "fake_ews"]
+packages = ["src"]
 
 # Third-party libraries without complete type information.
 [[tool.mypy.overrides]]

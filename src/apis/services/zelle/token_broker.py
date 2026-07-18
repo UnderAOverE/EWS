@@ -47,8 +47,8 @@ from joserfc.jwk import RSAKey
 
 # Internal imports
 
-from apis.config.zelle import ZelleSettings
-from apis.models.zelle.errors import (
+from src.apis.config.zelle import ZelleSettings
+from src.apis.models.zelle.errors import (
     AuthConfigError,
     RateLimitedError,
     UpstreamUnavailableError,

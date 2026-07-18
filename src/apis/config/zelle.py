@@ -43,7 +43,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Internal imports
 
-from apis.models.zelle.enums import HoldMode
+from src.apis.models.zelle.enums import HoldMode
 
 # Local variables
 

@@ -42,7 +42,7 @@ from mongomock_motor import AsyncMongoMockClient
 
 # Internal imports
 
-from apis.config.zelle import ZelleSettings
+from src.apis.config.zelle import ZelleSettings
 
 # Local variables
 

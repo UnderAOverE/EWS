@@ -42,9 +42,9 @@ from fastapi.responses import JSONResponse
 
 # Internal imports
 
-from apis.dependencies.zelle import get_correlation_id, get_service, require_client_id
-from apis.models.zelle.northbound import ResolveRequest
-from apis.services.zelle.event_service import EventService
+from src.apis.dependencies.zelle import get_correlation_id, get_service, require_client_id
+from src.apis.models.zelle.northbound import ResolveRequest
+from src.apis.services.zelle.event_service import EventService
 
 # Local variables
 
