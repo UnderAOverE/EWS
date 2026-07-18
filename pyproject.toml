@@ -1,0 +1,24 @@
+# Tool configuration for the lint/type gate (ruff + mypy clean on every commit per CLAUDE.md).
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+# E402: the mandated file template places `sys.dont_write_bytecode = True` immediately after
+# `import sys` and before all other imports, so every module intentionally trips E402.
+ignore = ["E402"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+mypy_path = "src"
+packages = ["apis", "fake_ews"]
+
+# Third-party libraries without complete type information.
+[[tool.mypy.overrides]]
+module = ["mongomock_motor.*"]
+ignore_missing_imports = true
+
+# end_pyproject.toml
