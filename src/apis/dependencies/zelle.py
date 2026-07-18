@@ -48,22 +48,22 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 
 # Internal imports
 
-from apis.config.zelle import ZelleSettings
-from apis.models.zelle.errors import (
+from src.apis.config.zelle import ZelleSettings
+from src.apis.models.zelle.errors import (
     ForbiddenActionError,
     ValidationFailedError,
     ZelleFacadeError,
     validation_exception_handler,
     zelle_exception_handler,
 )
-from apis.repositories.zelle.audit import AuditRepository
-from apis.repositories.zelle.events import EventsRepository
-from apis.repositories.zelle.idempotency import IdempotencyRepository
-from apis.repositories.zelle.leases import LeaseRepository
-from apis.services.zelle.event_service import EventService
-from apis.services.zelle.token_broker import TokenBroker
-from apis.services.zelle.watchdog import Watchdog
-from apis.services.zelle.zoms_client import ZomsClient
+from src.apis.repositories.zelle.audit import AuditRepository
+from src.apis.repositories.zelle.events import EventsRepository
+from src.apis.repositories.zelle.idempotency import IdempotencyRepository
+from src.apis.repositories.zelle.leases import LeaseRepository
+from src.apis.services.zelle.event_service import EventService
+from src.apis.services.zelle.token_broker import TokenBroker
+from src.apis.services.zelle.watchdog import Watchdog
+from src.apis.services.zelle.zoms_client import ZomsClient
 
 # Local variables
 
@@ -144,6 +144,8 @@ async def register_zelle(
     settings: ZelleSettings,
     http_client: httpx.AsyncClient,
     database: AsyncIOMotorDatabase[dict[str, Any]],
+    *,
+    include_routers: bool = True,
     ) -> ZelleRuntime:
 
     """
@@ -160,14 +162,18 @@ async def register_zelle(
     :type http_client: httpx.AsyncClient
     :param database: The host app's Motor database.
     :type database: AsyncIOMotorDatabase[dict[str, Any]]
+    :param include_routers: Pass False when the host main.py already includes
+        ``zelle_events_router`` / ``zelle_admin_router`` itself (per its ose/saas pattern) —
+        double inclusion would register duplicate routes.
+    :type include_routers: bool
     :return: The wired runtime container (also stored on ``app.state.zelle_runtime``).
     :rtype: ZelleRuntime
     """
 
     # Deferred import: the routers depend on the providers below, so a top-level import here
     # would be circular. This is the single sanctioned exception to the import-block rule.
-    from apis.routes.zelle.admin import admin_router
-    from apis.routes.zelle.events import events_router
+    from src.apis.routes.zelle.admin import admin_router
+    from src.apis.routes.zelle.events import events_router
 
     runtime = build_zelle_runtime(settings, http_client, database)
     app.state.zelle_runtime = runtime
@@ -179,8 +185,10 @@ async def register_zelle(
     if swept:
         LOGGER.warning("startup sweep moved %d PENDING event(s) to UNCERTAIN", swept)
     # endIf
-    app.include_router(events_router)
-    app.include_router(admin_router)
+    if include_routers:
+        app.include_router(events_router)
+        app.include_router(admin_router)
+    # endIf
     # Starlette types handlers as taking bare Exception; the registration key guarantees the
     # narrower exception type at runtime, so the ignores are safe.
     app.add_exception_handler(ZelleFacadeError, zelle_exception_handler)  # type: ignore[arg-type]

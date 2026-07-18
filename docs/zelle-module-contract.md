@@ -9,9 +9,11 @@
 
 ## Ground rules
 
-- Imports are rooted at `apis.` and `fake_ews.` (`src/` is on the path via
-  `pytest.ini` / the host app's packaging). Example:
-  `from apis.models.zelle.enums import EventStatus`.
+- Imports are rooted at `src.apis.` and `src.fake_ews.`, matching the host
+  app's convention exactly (confirmed 2026-07-18 from the host `main.py` /
+  `Clusters.py`: internal modules import via the `src.` prefix). Example:
+  `from src.apis.models.zelle.enums import EventStatus`. The repo root is on
+  the path via `pytest.ini`.
 - **Never import `common.*`** — those modules exist only in the host app
   (`fdn-c-amp-fapis-py`). The host's `httpx.AsyncClient` and Motor database
   are **injected** through `apis/dependencies/zelle.py`.
@@ -542,7 +544,7 @@ pytest>=8.0  pytest-asyncio>=0.24  respx>=0.21  mongomock-motor>=0.0.30
 
 ```ini
 [pytest]
-pythonpath = src
+pythonpath = .
 testpaths = tests
 asyncio_mode = auto
 ```

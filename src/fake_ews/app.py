@@ -46,7 +46,7 @@ from pydantic import ValidationError
 
 # Internal imports
 
-from apis.models.zelle.southbound import EwsScheduleRequest
+from src.apis.models.zelle.southbound import EwsScheduleRequest
 
 # Local variables
 

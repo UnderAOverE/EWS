@@ -44,7 +44,7 @@ from pymongo.errors import DuplicateKeyError
 
 # Internal imports
 
-from apis.models.zelle.records import IdempotencyRecord
+from src.apis.models.zelle.records import IdempotencyRecord
 
 # Local variables
 

@@ -44,7 +44,7 @@ from pydantic.alias_generators import to_camel
 
 # Internal imports
 
-from apis.models.zelle.enums import ErrorCode
+from src.apis.models.zelle.enums import ErrorCode
 
 # Local variables
 

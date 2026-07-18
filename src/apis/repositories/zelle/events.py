@@ -43,8 +43,8 @@ from pymongo import ASCENDING, DESCENDING, ReturnDocument
 
 # Internal imports
 
-from apis.models.zelle.enums import EventStatus
-from apis.models.zelle.records import EventRecord
+from src.apis.models.zelle.enums import EventStatus
+from src.apis.models.zelle.records import EventRecord
 
 # Local variables
 

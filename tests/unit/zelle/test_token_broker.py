@@ -49,13 +49,13 @@ import respx
 
 # Internal imports
 
-from apis.config.zelle import ZelleSettings
-from apis.models.zelle.errors import (
+from src.apis.config.zelle import ZelleSettings
+from src.apis.models.zelle.errors import (
     AuthConfigError,
     RateLimitedError,
     UpstreamUnavailableError,
 )
-from apis.services.zelle.token_broker import CircuitBreaker, TokenBroker
+from src.apis.services.zelle.token_broker import CircuitBreaker, TokenBroker
 
 # Local variables
 

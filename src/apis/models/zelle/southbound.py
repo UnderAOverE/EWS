@@ -42,7 +42,7 @@ from pydantic.alias_generators import to_camel
 
 # Internal imports
 
-from apis.models.zelle.enums import HoldMode
+from src.apis.models.zelle.enums import HoldMode
 
 # Local variables
 

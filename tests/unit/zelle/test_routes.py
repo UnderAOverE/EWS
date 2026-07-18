@@ -47,9 +47,9 @@ from mongomock_motor import AsyncMongoMockClient
 
 # Internal imports
 
-from apis.config.zelle import ZelleSettings
-from apis.dependencies.zelle import register_zelle
-from fake_ews.app import create_fake_ews_app
+from src.apis.config.zelle import ZelleSettings
+from src.apis.dependencies.zelle import register_zelle
+from src.fake_ews.app import create_fake_ews_app
 
 # Local variables
 
@@ -347,6 +347,66 @@ async def test_unknown_event_is_404_envelope(consumer: httpx.AsyncClient) -> Non
     )
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "NOT_FOUND"
+# endDef
+
+
+def test_package_reexports_match_router_objects() -> None:
+
+    """
+    apis.routes re-exports the zelle routers under host-app naming, pointing at the same
+    router objects the register path uses.
+    """
+
+    from src.apis.routes import zelle_admin_router, zelle_events_router
+    from src.apis.routes.zelle.admin import admin_router
+    from src.apis.routes.zelle.events import events_router
+
+    assert zelle_events_router is events_router
+    assert zelle_admin_router is admin_router
+# endDef
+
+
+async def test_host_style_wiring_without_double_registration(
+    settings: ZelleSettings,
+    database: AsyncMongoMockClient,
+    ) -> None:
+
+    """
+    The host-app pattern — include the re-exported routers in main.py, then
+    register_zelle(include_routers=False) — serves traffic with each route registered
+    exactly once.
+    """
+
+    from src.apis.routes import zelle_admin_router, zelle_events_router
+
+    southbound = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=create_fake_ews_app()),
+        base_url="http://fake-ews",
+    )
+    app = FastAPI()
+    # Mirrors the host main.py: routers included at module scope, wiring in the lifespan.
+    app.include_router(zelle_events_router)
+    app.include_router(zelle_admin_router)
+    routes_before = len(app.routes)
+    await register_zelle(app, settings, southbound, database, include_routers=False)
+    # include_routers=False must not add any routes on top of the host's own includes.
+    assert len(app.routes) == routes_before
+    consumer = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://facade",
+    )
+    try:
+        response = await consumer.post(
+            EVENTS_PATH,
+            json=_schedule_body(),
+            headers={"X-Client-Id": CLIENT_ID},
+        )
+        assert response.status_code == 201, response.text
+        assert response.json()["status"] == "SCHEDULED"
+    finally:
+        await consumer.aclose()
+        await southbound.aclose()
+    # endTryFinally
 # endDef
 
 

@@ -41,7 +41,7 @@ from pydantic import BaseModel
 
 # Internal imports
 
-from apis.models.zelle.enums import AuditKind, AuditOutcome, EventStatus, HoldMode
+from src.apis.models.zelle.enums import AuditKind, AuditOutcome, EventStatus, HoldMode
 
 # Local variables
 
