@@ -36,9 +36,9 @@ sys.dont_write_bytecode = True
 
 import logging
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Internal imports
@@ -48,6 +48,15 @@ from src.apis.models.zelle.enums import HoldMode
 # Local variables
 
 LOGGER = logging.getLogger(__name__)
+# Built-in ZOMS API base URLs per environment (docs/zoms-api-reference.md). Selected by
+# ``environment`` so lower environments resolve to CAT and production to PROD without hand-set
+# URLs; an explicit ``api_base_url`` always overrides. ``fake`` has no built-in (local stub URL
+# varies) and must be provided. Deliberately NOT including token_url/token_aud — those are
+# flagged unconfirmed in the vendor reference and stay explicit.
+ENV_API_BASE_URLS: dict[str, str] = {
+    "cat": "https://api.zelle.cat.earlywarning.io/zoms",
+    "prod": "https://api.zelle.earlywarning.com/zoms",
+}
 
 
 # ----------------------------------------------------------------------------------------------------#
@@ -103,8 +112,45 @@ class ZelleSettings(BaseSettings):
     watchdog_enabled: bool = False
     watchdog_interval_seconds: float = 60.0
     watchdog_grace_seconds: float = 900.0
+    # Email alerting: when enabled, the watchdog emails stuck-event alerts via an SMTP relay in
+    # addition to the CRITICAL log line. smtp_host / alert_email_from / alert_email_to are
+    # required when alert_email_enabled is True (validated at startup). smtp_use_tls selects
+    # STARTTLS; credentials are optional (internal relays are often unauthenticated).
+    alert_email_enabled: bool = False
+    smtp_host: str | None = None
+    smtp_port: int = 25
+    smtp_use_tls: bool = False
+    smtp_username: str | None = None
+    smtp_password: SecretStr | None = None
+    alert_email_from: str | None = None
+    alert_email_to: list[str] = []
     # Mongo.
     mongo_collection_prefix: str = "zelle"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _default_endpoints_for_environment(cls, data: Any) -> Any:
+
+        """
+        Fill ``api_base_url`` from the built-in per-environment map when the caller did not set it
+        explicitly, so lower environments resolve to CAT and production to PROD. An explicit value
+        (env var or kwarg) always wins; ``fake`` has no built-in URL and must be provided.
+
+        :param data: The raw input mapping before field validation.
+        :type data: Any
+        :return: The possibly-augmented input mapping.
+        :rtype: Any
+        """
+
+        if isinstance(data, dict) and not data.get("api_base_url"):
+            environment = data.get("environment", "fake")
+            default_url = ENV_API_BASE_URLS.get(environment)
+            if default_url is not None:
+                data["api_base_url"] = default_url
+            # endIf
+        # endIf
+        return data
+    # endDef
 # endClass
 
 

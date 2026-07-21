@@ -5,6 +5,7 @@ motor>=3.6
 pydantic>=2.8
 pydantic-settings>=2.4
 joserfc>=1.0
+aiosmtplib>=3.0
 uvicorn>=0.30
 # Dev/test dependencies.
 pytest>=8.0

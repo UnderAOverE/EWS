@@ -49,6 +49,7 @@ from mongomock_motor import AsyncMongoMockClient
 
 from src.apis.config.zelle import ZelleSettings
 from src.apis.dependencies.zelle import register_zelle
+from src.apis.repositories.zelle.indexes import create_zelle_indexes
 from src.fake_ews.app import create_fake_ews_app
 
 # Local variables
@@ -80,6 +81,8 @@ async def _build_consumer(
     )
     app = FastAPI()
     await register_zelle(app, settings, southbound, database)
+    # register_zelle no longer creates indexes; provision them as production would before serving.
+    await create_zelle_indexes(database, settings.mongo_collection_prefix)
     consumer = httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),
         base_url="http://facade",
@@ -389,6 +392,7 @@ async def test_host_style_wiring_without_double_registration(
     app.include_router(zelle_admin_router)
     routes_before = len(app.routes)
     await register_zelle(app, settings, southbound, database, include_routers=False)
+    await create_zelle_indexes(database, settings.mongo_collection_prefix)
     # include_routers=False must not add any routes on top of the host's own includes.
     assert len(app.routes) == routes_before
     consumer = httpx.AsyncClient(
