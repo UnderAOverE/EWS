@@ -60,9 +60,10 @@ from src.apis.repositories.zelle.audit import AuditRepository
 from src.apis.repositories.zelle.events import EventsRepository
 from src.apis.repositories.zelle.idempotency import IdempotencyRepository
 from src.apis.repositories.zelle.leases import LeaseRepository
+from src.apis.services.zelle.alerter import SmtpAlerter
 from src.apis.services.zelle.event_service import EventService
 from src.apis.services.zelle.token_broker import TokenBroker
-from src.apis.services.zelle.watchdog import Watchdog
+from src.apis.services.zelle.watchdog import Alerter, Watchdog
 from src.apis.services.zelle.zoms_client import ZomsClient
 
 # Local variables
@@ -92,9 +93,40 @@ class ZelleRuntime:
     idempotency: IdempotencyRepository
     audit: AuditRepository
     leases: LeaseRepository
+    alerter: Alerter | None
     service: EventService
     watchdog: Watchdog | None
 # endClass
+
+
+def _build_alerter(settings: ZelleSettings) -> SmtpAlerter:
+
+    """
+    Construct the SMTP alerter from settings, failing fast when alerting is enabled but its
+    required relay or envelope configuration is incomplete.
+
+    :param settings: Zelle facade settings.
+    :type settings: ZelleSettings
+    :return: The configured SMTP alerter.
+    :rtype: SmtpAlerter
+    :raises ValueError: If ``smtp_host``, ``alert_email_from``, or ``alert_email_to`` is missing.
+    """
+
+    if not settings.smtp_host or not settings.alert_email_from or not settings.alert_email_to:
+        raise ValueError(
+            "alert_email_enabled requires smtp_host, alert_email_from, and alert_email_to.",
+        )
+    # endIf
+    return SmtpAlerter(
+        host=settings.smtp_host,
+        port=settings.smtp_port,
+        use_tls=settings.smtp_use_tls,
+        username=settings.smtp_username,
+        password=settings.smtp_password,
+        sender=settings.alert_email_from,
+        recipients=settings.alert_email_to,
+    )
+# endDef
 
 
 def build_zelle_runtime(
@@ -124,7 +156,10 @@ def build_zelle_runtime(
     audit = AuditRepository(database, prefix)
     leases = LeaseRepository(database, prefix)
     service = EventService(settings, events, idempotency, audit, zoms_client)
-    watchdog = Watchdog(settings, events, leases) if settings.watchdog_enabled else None
+    alerter = _build_alerter(settings) if settings.alert_email_enabled else None
+    watchdog = (
+        Watchdog(settings, events, leases, alerter) if settings.watchdog_enabled else None
+    )
     return ZelleRuntime(
         settings=settings,
         broker=broker,
@@ -133,6 +168,7 @@ def build_zelle_runtime(
         idempotency=idempotency,
         audit=audit,
         leases=leases,
+        alerter=alerter,
         service=service,
         watchdog=watchdog,
     )
@@ -149,10 +185,10 @@ async def register_zelle(
     ) -> ZelleRuntime:
 
     """
-    Mount the zelle bounded context on the host application: build the runtime, ensure Mongo
-    indexes, run the startup PENDING sweep, include the routers, register the exception
-    handlers, and start the watchdog task when enabled. The HOST APP calls this from its
-    lifespan with its baked-in client and database.
+    Mount the zelle bounded context on the host application: build the runtime, run the startup
+    PENDING sweep, include the routers, register the exception handlers, and start the watchdog
+    task when enabled. Indexes are provisioned out-of-band (see apis.repositories.zelle.indexes),
+    not here. The HOST APP calls this from its lifespan with its baked-in client and database.
 
     :param app: The host FastAPI application.
     :type app: FastAPI
@@ -177,10 +213,9 @@ async def register_zelle(
 
     runtime = build_zelle_runtime(settings, http_client, database)
     app.state.zelle_runtime = runtime
-    await runtime.events.ensure_indexes()
-    await runtime.idempotency.ensure_indexes()
-    await runtime.audit.ensure_indexes()
-    await runtime.leases.ensure_indexes()
+    # Indexes are NOT created here: pods must not run DDL on every restart (and may lack the
+    # privilege). Provision them once out-of-band with apis.repositories.zelle.indexes
+    # (create_zelle_indexes / python -m src.apis.repositories.zelle.indexes) before serving.
     swept = await runtime.service.startup_sweep()
     if swept:
         LOGGER.warning("startup sweep moved %d PENDING event(s) to UNCERTAIN", swept)
