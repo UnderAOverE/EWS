@@ -371,23 +371,21 @@ The **signing private key is the crown jewel** — it lives in the bank's
 secret store, mounted read-only. It never goes in the repo, committed YAML,
 or a checked-in env file.
 
-### One-time setup: database indexes
+### One-time setup: database collections and indexes
 
 The service **does not create MongoDB indexes on startup** — pods must not run
 DDL on every restart (and the runtime DB user may not even have the
-privilege). Instead, create them **once** when provisioning the database
-(and again only if the index set changes):
+privilege). Create the four `zelle_*` collections' indexes **once** by hand
+(or via your DBA) when provisioning the database, and again only if the index
+set changes.
 
-```bash
-ZELLE_MONGO_URI="mongodb://…" ZELLE_MONGO_DB="ampdb" ZELLE_MONGO_COLLECTION_PREFIX="zelle" \
-  python -m src.apis.repositories.zelle.indexes
-```
-
-This creates every index the four `zelle_*` collections need — including the
-**unique idempotency index** and the **TTL lease index**, which are
-load-bearing for correctness, so they must exist before the service serves
-traffic. (The host app can also call `create_zelle_indexes(database, prefix)`
-directly from a provisioning step.)
+The exact collections, indexes, ready-to-run `mongosh` commands, and **why
+each one is needed** live in
+**[database-collections-and-indexes.md](database-collections-and-indexes.md)**.
+The two that matter for *correctness* are the **unique idempotency index**
+(`zelle_idempotency` on `{client_id, key}`) and the **TTL lease index**
+(`zelle_leases` on `{expires_at}`); they must exist before the service serves
+traffic.
 
 ---
 
@@ -519,7 +517,7 @@ threads.
 | The watchdog (stuck-event alerter, reuses host EmailService) | `src/apis/services/zelle/watchdog.py` |
 | The exact EWS wire formats | `src/apis/models/zelle/southbound.py` + [zoms-api-reference.md](zoms-api-reference.md) |
 | What to configure | `src/apis/config/zelle.py` |
-| One-time index provisioning | `src/apis/repositories/zelle/indexes.py` |
+| Collections + indexes to create | [database-collections-and-indexes.md](database-collections-and-indexes.md) |
 | A fake EWS to test against | `src/fake_ews/app.py` |
 
 ---

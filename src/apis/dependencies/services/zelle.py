@@ -163,9 +163,9 @@ async def register_zelle(
     """
     Mount the zelle bounded context on the host application: build the runtime, run the startup
     PENDING sweep, include the routers, register the exception handlers, and start the watchdog
-    task when enabled. Indexes are provisioned out-of-band (see apis.repositories.zelle.indexes),
-    not here. The HOST APP calls this from its lifespan with its baked-in client, database, and
-    EmailService.
+    task when enabled. Indexes are provisioned out-of-band (see
+    docs/database-collections-and-indexes.md), not here. The HOST APP calls this from its lifespan
+    with its baked-in client, database, and EmailService.
 
     :param app: The host FastAPI application.
     :type app: FastAPI
@@ -194,8 +194,8 @@ async def register_zelle(
     runtime = build_zelle_runtime(settings, http_client, database, email_service)
     app.state.zelle_runtime = runtime
     # Indexes are NOT created here: pods must not run DDL on every restart (and may lack the
-    # privilege). Provision them once out-of-band with apis.repositories.zelle.indexes
-    # (create_zelle_indexes / python -m src.apis.repositories.zelle.indexes) before serving.
+    # privilege). Provision the collections and indexes once, out-of-band, before serving — see
+    # docs/database-collections-and-indexes.md.
     swept = await runtime.service.startup_sweep()
     if swept:
         LOGGER.warning("startup sweep moved %d PENDING event(s) to UNCERTAIN", swept)
