@@ -98,7 +98,7 @@ async def _build_consumer(
         base_url="http://fake-ews",
     )
     app = FastAPI()
-    runtime = await register_zelle(app, settings, southbound, database)
+    runtime = await register_zelle(app, settings, database, http_client=southbound)
     # register_zelle no longer creates indexes; provision them as production would before serving.
     await _ensure_zelle_indexes(runtime)
     consumer = httpx.AsyncClient(
@@ -409,7 +409,13 @@ async def test_host_style_wiring_without_double_registration(
     app.include_router(zelle_events_router)
     app.include_router(zelle_admin_router)
     routes_before = len(app.routes)
-    runtime = await register_zelle(app, settings, southbound, database, include_routers=False)
+    runtime = await register_zelle(
+        app,
+        settings,
+        database,
+        http_client=southbound,
+        include_routers=False,
+    )
     await _ensure_zelle_indexes(runtime)
     # include_routers=False must not add any routes on top of the host's own includes.
     assert len(app.routes) == routes_before

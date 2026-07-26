@@ -11,10 +11,11 @@
 # Author        : Shane Reddy.                                                                        #
 #                                                                                                     #
 # Explanation   : Zelle wiring and dependency providers, laid out per the host app's                  #
-#                 dependencies/services convention. Holds the ZelleRuntime container built from        #
-#                 the host's injected httpx client, Motor database, and optional EmailService;         #
-#                 register_zelle (startup sweep, routers, exception handlers, watchdog task); and      #
-#                 the request-time providers (runtime/service, correlation id, client attribution).    #
+#                 dependencies/services convention. Builds the ZelleRuntime from the host's Motor      #
+#                 database and optional EmailService, and owns its southbound (mTLS) httpx client       #
+#                 built from settings; register_zelle (startup sweep, routers, handlers, watchdog),     #
+#                 shutdown_zelle (teardown), and the request-time providers (runtime/service,          #
+#                 correlation id, client attribution).                                                #
 # Dependencies  : fastapi, httpx, motor, apis.config.zelle, apis.models.zelle.errors,                 #
 #                 apis.repositories.zelle.*, apis.services.zelle.*.                                    #
 # Modifications : 2026-07-18 Shane Reddy — Initial version.                                            #
@@ -38,6 +39,7 @@ sys.dont_write_bytecode = True
 
 import asyncio
 import logging
+import ssl
 import uuid
 from dataclasses import dataclass
 from typing import Any
@@ -87,6 +89,10 @@ class ZelleRuntime:
     """
 
     settings: ZelleSettings
+    http_client: httpx.AsyncClient
+    # True when zelle built the client itself (Option A) and must close it on shutdown; False when
+    # a client was injected (tests), in which case the injector owns its lifecycle.
+    owns_http_client: bool
     broker: TokenBroker
     zoms_client: ZomsClient
     events: EventsRepository
@@ -99,23 +105,73 @@ class ZelleRuntime:
 # endClass
 
 
+def _build_ssl_context(settings: ZelleSettings) -> ssl.SSLContext | bool:
+
+    """
+    Build the southbound TLS verification for the zelle-owned httpx client: a private-CA-aware
+    context with optional mTLS client cert/key, mirroring the host's SSL setup. Returns ``False``
+    when verification is disabled (non-prod only).
+
+    :param settings: Zelle facade settings carrying the TLS material paths.
+    :type settings: ZelleSettings
+    :return: An SSL context to pass as httpx ``verify``, or False to disable verification.
+    :rtype: ssl.SSLContext | bool
+    """
+
+    if not settings.verify_ssl:
+        return False
+    # endIf
+    context = ssl.create_default_context()
+    if settings.ca_certificate_path is not None:
+        context.load_verify_locations(cafile=str(settings.ca_certificate_path))
+    # endIf
+    if settings.client_certificate_path is not None and settings.client_key_path is not None:
+        # mTLS: present the EWS client certificate. The pair is validated together in settings.
+        context.load_cert_chain(
+            certfile=str(settings.client_certificate_path),
+            keyfile=str(settings.client_key_path),
+        )
+    # endIf
+    return context
+# endDef
+
+
+def _build_http_client(settings: ZelleSettings) -> httpx.AsyncClient:
+
+    """
+    Construct the single zelle-owned async HTTP client, with TLS/mTLS from settings. Per-request
+    timeouts are applied by the token broker and ZOMS client, so none is set here.
+
+    :param settings: Zelle facade settings.
+    :type settings: ZelleSettings
+    :return: The async HTTP client used for all southbound calls.
+    :rtype: httpx.AsyncClient
+    """
+
+    return httpx.AsyncClient(verify=_build_ssl_context(settings))
+# endDef
+
+
 def build_zelle_runtime(
     settings: ZelleSettings,
-    http_client: httpx.AsyncClient,
     database: AsyncIOMotorDatabase[dict[str, Any]],
+    *,
+    http_client: httpx.AsyncClient | None = None,
     email_service: AlertSender | None = None,
     ) -> ZelleRuntime:
 
     """
-    Construct the full zelle object graph from the host app's injected client, database, and
-    optional EmailService.
+    Construct the full zelle object graph from the host app's injected database and optional
+    EmailService. The southbound HTTP client is built here from settings (TLS/mTLS) unless one is
+    injected — tests inject a fake-EWS client; production omits it so zelle owns and closes its own.
 
     :param settings: Zelle facade settings.
     :type settings: ZelleSettings
-    :param http_client: The host app's shared async HTTP client (zelle never constructs one).
-    :type http_client: httpx.AsyncClient
     :param database: The host app's Motor database.
     :type database: AsyncIOMotorDatabase[dict[str, Any]]
+    :param http_client: An HTTP client to use; when None (production), zelle builds and owns its
+        own mTLS-configured client. When provided (tests), the injector owns its lifecycle.
+    :type http_client: httpx.AsyncClient | None
     :param email_service: The host app's EmailService (or any AlertSender); when provided and the
         watchdog is enabled, stuck events are emailed in addition to the CRITICAL log. None
         disables email alerting.
@@ -124,6 +180,10 @@ def build_zelle_runtime(
     :rtype: ZelleRuntime
     """
 
+    owns_http_client = http_client is None
+    if http_client is None:
+        http_client = _build_http_client(settings)
+    # endIf
     prefix = settings.mongo_collection_prefix
     broker = TokenBroker(settings, http_client)
     zoms_client = ZomsClient(settings, http_client, broker)
@@ -137,6 +197,8 @@ def build_zelle_runtime(
     )
     return ZelleRuntime(
         settings=settings,
+        http_client=http_client,
+        owns_http_client=owns_http_client,
         broker=broker,
         zoms_client=zoms_client,
         events=events,
@@ -153,9 +215,9 @@ def build_zelle_runtime(
 async def register_zelle(
     app: FastAPI,
     settings: ZelleSettings,
-    http_client: httpx.AsyncClient,
     database: AsyncIOMotorDatabase[dict[str, Any]],
     *,
+    http_client: httpx.AsyncClient | None = None,
     email_service: AlertSender | None = None,
     include_routers: bool = True,
     ) -> ZelleRuntime:
@@ -165,16 +227,18 @@ async def register_zelle(
     PENDING sweep, include the routers, register the exception handlers, and start the watchdog
     task when enabled. Indexes are provisioned out-of-band (see
     docs/database-collections-and-indexes.md), not here. The HOST APP calls this from its lifespan
-    with its baked-in client, database, and EmailService.
+    with its Motor database and EmailService; zelle builds and owns its own southbound (mTLS) HTTP
+    client from settings. Call :func:`shutdown_zelle` from the lifespan's finally block.
 
     :param app: The host FastAPI application.
     :type app: FastAPI
     :param settings: Zelle facade settings.
     :type settings: ZelleSettings
-    :param http_client: The host app's shared async HTTP client.
-    :type http_client: httpx.AsyncClient
     :param database: The host app's Motor database.
     :type database: AsyncIOMotorDatabase[dict[str, Any]]
+    :param http_client: Optional HTTP client override; omit in production so zelle builds and owns
+        its own TLS/mTLS client, pass one in tests to route southbound calls at a fake EWS.
+    :type http_client: httpx.AsyncClient | None
     :param email_service: The host app's EmailService for watchdog alerts, or None to disable
         email alerting.
     :type email_service: AlertSender | None
@@ -191,7 +255,12 @@ async def register_zelle(
     from src.apis.routes.zelle.admin import admin_router
     from src.apis.routes.zelle.events import events_router
 
-    runtime = build_zelle_runtime(settings, http_client, database, email_service)
+    runtime = build_zelle_runtime(
+        settings,
+        database,
+        http_client=http_client,
+        email_service=email_service,
+    )
     app.state.zelle_runtime = runtime
     # Indexes are NOT created here: pods must not run DDL on every restart (and may lack the
     # privilege). Provision the collections and indexes once, out-of-band, before serving — see
@@ -216,6 +285,39 @@ async def register_zelle(
         app.state.zelle_watchdog_task = asyncio.create_task(runtime.watchdog.run_forever())
     # endIf
     return runtime
+# endDef
+
+
+async def shutdown_zelle(app: FastAPI) -> None:
+
+    """
+    Tear down the zelle bounded context: stop the watchdog (releasing its Mongo lease) and close
+    the zelle-owned HTTP client. Safe to call unconditionally; a no-op if zelle was never
+    registered. The HOST APP calls this from its lifespan's finally block.
+
+    :param app: The host FastAPI application.
+    :type app: FastAPI
+    :return: None.
+    :rtype: None
+    """
+
+    runtime: ZelleRuntime | None = getattr(app.state, "zelle_runtime", None)
+    if runtime is None:
+        return
+    # endIf
+    watchdog_task: asyncio.Task[None] | None = getattr(app.state, "zelle_watchdog_task", None)
+    if runtime.watchdog is not None and watchdog_task is not None:
+        runtime.watchdog.stop()
+        try:
+            await watchdog_task
+        except asyncio.CancelledError:
+            pass
+        # endTryExcept
+    # endIf
+    if runtime.owns_http_client:
+        # Only close what zelle built; an injected client is the injector's to close.
+        await runtime.http_client.aclose()
+    # endIf
 # endDef
 
 

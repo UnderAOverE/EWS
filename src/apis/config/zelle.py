@@ -37,7 +37,7 @@ sys.dont_write_bytecode = True
 
 import logging
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Self
 
 from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -93,6 +93,14 @@ class ZelleSettings(BaseSettings):
     # Must match the kid of the JWKS entry registered with EWS.
     signing_kid: str
     signing_key_path: Path
+    # Southbound TLS for the zelle-owned httpx client. verify_ssl=False disables verification
+    # (non-prod only). ca_certificate_path is a private CA bundle to trust EWS. client_certificate_
+    # path + client_key_path enable mTLS (the EWS client keypair — crown jewels, mounted read-only);
+    # both must be set together (enforced below).
+    verify_ssl: bool = True
+    ca_certificate_path: Path | None = None
+    client_certificate_path: Path | None = None
+    client_key_path: Path | None = None
     # Org constants injected into every schedule payload; lengths per docs/zoms-api-reference.md.
     org_id: Annotated[str, Field(min_length=3, max_length=3)]
     participant_name: Annotated[str, Field(min_length=1, max_length=50)]
@@ -152,6 +160,26 @@ class ZelleSettings(BaseSettings):
             # endIf
         # endIf
         return data
+    # endDef
+
+    @model_validator(mode="after")
+    def _validate_client_cert_pair(self) -> Self:
+
+        """
+        Enforce that the mTLS client certificate and key are configured together — a half-set pair
+        would silently skip mTLS, which on a payments integration must fail loud, not quiet.
+
+        :return: The validated settings instance.
+        :rtype: Self
+        :raises ValueError: If exactly one of the client cert / key paths is set.
+        """
+
+        if bool(self.client_certificate_path) != bool(self.client_key_path):
+            raise ValueError(
+                "client_certificate_path and client_key_path must be set together for mTLS.",
+            )
+        # endIf
+        return self
     # endDef
 # endClass
 
