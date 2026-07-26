@@ -61,27 +61,32 @@ LEASE_TTL_INTERVALS = 2.0
 # ----------------------------------------------------------------------------------------------------#
 
 
-class Alerter(Protocol):
+class AlertSender(Protocol):
 
     """
-    Port for sending operational alerts out of the watchdog. Implemented by an edge adapter
-    (e.g. :class:`apis.services.zelle.alerter.SmtpAlerter`); the watchdog depends only on this
-    Protocol, so the domain never imports the SMTP client directly.
+    Port for sending operational alert email out of the watchdog. Satisfied structurally by the
+    host application's ``EmailService`` (``send_alert``), injected via register_zelle — the
+    watchdog never constructs an email client and never re-implements prod gating (the host's
+    EmailService honours ``only_production`` itself).
     """
 
-    async def send(
+    async def send_alert(
         self,
         subject: str,
         body: str,
+        only_production: bool = True,
         ) -> None:
 
         """
-        Send an alert.
+        Send an alert email.
 
         :param subject: The alert subject line.
         :type subject: str
         :param body: The alert body.
         :type body: str
+        :param only_production: When True, the host EmailService suppresses the send outside a
+            production environment.
+        :type only_production: bool
         :return: None.
         :rtype: None
         """
@@ -104,7 +109,7 @@ class Watchdog:
         settings: ZelleSettings,
         events: EventsRepository,
         leases: LeaseRepository,
-        alerter: Alerter | None = None,
+        alerter: AlertSender | None = None,
         ) -> None:
 
         """
@@ -116,9 +121,9 @@ class Watchdog:
         :type events: EventsRepository
         :param leases: Lease repository backing the cross-replica singleton.
         :type leases: LeaseRepository
-        :param alerter: Optional alert egress; when set, stuck events are emailed in addition to
-            the CRITICAL log line. None disables email alerting.
-        :type alerter: Alerter | None
+        :param alerter: Optional alert egress (the host EmailService); when set, stuck events are
+            emailed in addition to the CRITICAL log line. None disables email alerting.
+        :type alerter: AlertSender | None
         """
 
         self._settings = settings
@@ -222,7 +227,11 @@ class Watchdog:
             + "\n".join(lines)
         )
         try:
-            await alerter.send(subject, body)
+            await alerter.send_alert(
+                subject,
+                body,
+                only_production=self._settings.alert_only_in_production,
+            )
         except Exception:
             # Broad by design: an alert-send failure must not kill the pager loop; the CRITICAL
             # log lines already emitted remain the alert of record.

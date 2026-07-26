@@ -5,18 +5,19 @@
 #
 # ----------------------------------------------------------------------------------------------------#
 #                                                                                                     #
-# File Name     : apis/dependencies/zelle.py.                                                         #
+# File Name     : apis/dependencies/services/zelle.py.                                                #
 # Date of birth : 2026-07-18.                                                                         #
 # Version       : 1.0.0.                                                                              #
 # Author        : Shane Reddy.                                                                        #
 #                                                                                                     #
-# Explanation   : Zelle wiring: the ZelleRuntime container built from the host app's injected         #
-#                 httpx client and Motor database, register_zelle (indexes, startup sweep,            #
-#                 routers, exception handlers, watchdog task), and the FastAPI dependency             #
-#                 providers (runtime/service accessors, correlation id, client attribution).          #
+# Explanation   : Zelle wiring and dependency providers, laid out per the host app's                  #
+#                 dependencies/services convention. Holds the ZelleRuntime container built from        #
+#                 the host's injected httpx client, Motor database, and optional EmailService;         #
+#                 register_zelle (startup sweep, routers, exception handlers, watchdog task); and      #
+#                 the request-time providers (runtime/service, correlation id, client attribution).    #
 # Dependencies  : fastapi, httpx, motor, apis.config.zelle, apis.models.zelle.errors,                 #
-#                 apis.repositories.zelle.*, apis.services.zelle.*.                                   #
-# Modifications : 2026-07-18 Shane Reddy — Initial version.                                           #
+#                 apis.repositories.zelle.*, apis.services.zelle.*.                                    #
+# Modifications : 2026-07-18 Shane Reddy — Initial version.                                            #
 #                                                                                                     #
 # Contact       : shanevreddy@gmail.com.                                                              #
 #                                                                                                     #
@@ -60,10 +61,9 @@ from src.apis.repositories.zelle.audit import AuditRepository
 from src.apis.repositories.zelle.events import EventsRepository
 from src.apis.repositories.zelle.idempotency import IdempotencyRepository
 from src.apis.repositories.zelle.leases import LeaseRepository
-from src.apis.services.zelle.alerter import SmtpAlerter
 from src.apis.services.zelle.event_service import EventService
 from src.apis.services.zelle.token_broker import TokenBroker
-from src.apis.services.zelle.watchdog import Alerter, Watchdog
+from src.apis.services.zelle.watchdog import AlertSender, Watchdog
 from src.apis.services.zelle.zoms_client import ZomsClient
 
 # Local variables
@@ -93,50 +93,22 @@ class ZelleRuntime:
     idempotency: IdempotencyRepository
     audit: AuditRepository
     leases: LeaseRepository
-    alerter: Alerter | None
+    email_service: AlertSender | None
     service: EventService
     watchdog: Watchdog | None
 # endClass
-
-
-def _build_alerter(settings: ZelleSettings) -> SmtpAlerter:
-
-    """
-    Construct the SMTP alerter from settings, failing fast when alerting is enabled but its
-    required relay or envelope configuration is incomplete.
-
-    :param settings: Zelle facade settings.
-    :type settings: ZelleSettings
-    :return: The configured SMTP alerter.
-    :rtype: SmtpAlerter
-    :raises ValueError: If ``smtp_host``, ``alert_email_from``, or ``alert_email_to`` is missing.
-    """
-
-    if not settings.smtp_host or not settings.alert_email_from or not settings.alert_email_to:
-        raise ValueError(
-            "alert_email_enabled requires smtp_host, alert_email_from, and alert_email_to.",
-        )
-    # endIf
-    return SmtpAlerter(
-        host=settings.smtp_host,
-        port=settings.smtp_port,
-        use_tls=settings.smtp_use_tls,
-        username=settings.smtp_username,
-        password=settings.smtp_password,
-        sender=settings.alert_email_from,
-        recipients=settings.alert_email_to,
-    )
-# endDef
 
 
 def build_zelle_runtime(
     settings: ZelleSettings,
     http_client: httpx.AsyncClient,
     database: AsyncIOMotorDatabase[dict[str, Any]],
+    email_service: AlertSender | None = None,
     ) -> ZelleRuntime:
 
     """
-    Construct the full zelle object graph from the host app's injected client and database.
+    Construct the full zelle object graph from the host app's injected client, database, and
+    optional EmailService.
 
     :param settings: Zelle facade settings.
     :type settings: ZelleSettings
@@ -144,6 +116,10 @@ def build_zelle_runtime(
     :type http_client: httpx.AsyncClient
     :param database: The host app's Motor database.
     :type database: AsyncIOMotorDatabase[dict[str, Any]]
+    :param email_service: The host app's EmailService (or any AlertSender); when provided and the
+        watchdog is enabled, stuck events are emailed in addition to the CRITICAL log. None
+        disables email alerting.
+    :type email_service: AlertSender | None
     :return: The wired runtime container.
     :rtype: ZelleRuntime
     """
@@ -156,9 +132,8 @@ def build_zelle_runtime(
     audit = AuditRepository(database, prefix)
     leases = LeaseRepository(database, prefix)
     service = EventService(settings, events, idempotency, audit, zoms_client)
-    alerter = _build_alerter(settings) if settings.alert_email_enabled else None
     watchdog = (
-        Watchdog(settings, events, leases, alerter) if settings.watchdog_enabled else None
+        Watchdog(settings, events, leases, email_service) if settings.watchdog_enabled else None
     )
     return ZelleRuntime(
         settings=settings,
@@ -168,7 +143,7 @@ def build_zelle_runtime(
         idempotency=idempotency,
         audit=audit,
         leases=leases,
-        alerter=alerter,
+        email_service=email_service,
         service=service,
         watchdog=watchdog,
     )
@@ -181,6 +156,7 @@ async def register_zelle(
     http_client: httpx.AsyncClient,
     database: AsyncIOMotorDatabase[dict[str, Any]],
     *,
+    email_service: AlertSender | None = None,
     include_routers: bool = True,
     ) -> ZelleRuntime:
 
@@ -188,7 +164,8 @@ async def register_zelle(
     Mount the zelle bounded context on the host application: build the runtime, run the startup
     PENDING sweep, include the routers, register the exception handlers, and start the watchdog
     task when enabled. Indexes are provisioned out-of-band (see apis.repositories.zelle.indexes),
-    not here. The HOST APP calls this from its lifespan with its baked-in client and database.
+    not here. The HOST APP calls this from its lifespan with its baked-in client, database, and
+    EmailService.
 
     :param app: The host FastAPI application.
     :type app: FastAPI
@@ -198,6 +175,9 @@ async def register_zelle(
     :type http_client: httpx.AsyncClient
     :param database: The host app's Motor database.
     :type database: AsyncIOMotorDatabase[dict[str, Any]]
+    :param email_service: The host app's EmailService for watchdog alerts, or None to disable
+        email alerting.
+    :type email_service: AlertSender | None
     :param include_routers: Pass False when the host main.py already includes
         ``zelle_events_router`` / ``zelle_admin_router`` itself (per its ose/saas pattern) —
         double inclusion would register duplicate routes.
@@ -211,7 +191,7 @@ async def register_zelle(
     from src.apis.routes.zelle.admin import admin_router
     from src.apis.routes.zelle.events import events_router
 
-    runtime = build_zelle_runtime(settings, http_client, database)
+    runtime = build_zelle_runtime(settings, http_client, database, email_service)
     app.state.zelle_runtime = runtime
     # Indexes are NOT created here: pods must not run DDL on every restart (and may lack the
     # privilege). Provision them once out-of-band with apis.repositories.zelle.indexes
@@ -239,7 +219,7 @@ async def register_zelle(
 # endDef
 
 
-def get_runtime(request: Request) -> ZelleRuntime:
+def get_zelle_runtime(request: Request) -> ZelleRuntime:
 
     """
     FastAPI provider: the app-level zelle runtime container.
@@ -255,7 +235,7 @@ def get_runtime(request: Request) -> ZelleRuntime:
 # endDef
 
 
-def get_service(request: Request) -> EventService:
+def get_zelle_service(request: Request) -> EventService:
 
     """
     FastAPI provider: the event orchestration service.
@@ -266,11 +246,11 @@ def get_service(request: Request) -> EventService:
     :rtype: EventService
     """
 
-    return get_runtime(request).service
+    return get_zelle_runtime(request).service
 # endDef
 
 
-async def get_correlation_id(
+async def get_zelle_correlation_id(
     request: Request,
     x_correlation_id: str | None = Header(None),
     ) -> str:
@@ -295,7 +275,7 @@ async def get_correlation_id(
 # endDef
 
 
-async def require_client_id(
+async def require_zelle_client_id(
     request: Request,
     x_client_id: str | None = Header(None),
     ) -> str:
@@ -317,7 +297,7 @@ async def require_client_id(
     if x_client_id is None or not x_client_id.strip():
         raise ValidationFailedError("X-Client-Id header is required.")
     # endIf
-    allowlist = get_runtime(request).settings.client_allowlist
+    allowlist = get_zelle_runtime(request).settings.client_allowlist
     if allowlist and x_client_id not in allowlist:
         raise ForbiddenActionError("Client is not allowed to use the zelle facade.")
     # endIf
@@ -325,4 +305,4 @@ async def require_client_id(
 # endDef
 
 
-# end_apis/dependencies/zelle.py
+# end_apis/dependencies/services/zelle.py

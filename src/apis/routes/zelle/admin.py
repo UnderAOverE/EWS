@@ -14,7 +14,7 @@
 #                 manual reconciliation with EWS. Fully audited with the operator attestation;        #
 #                 this endpoint is the exit from the state-machine lock, so the state machine         #
 #                 never becomes the outage.                                                           #
-# Dependencies  : fastapi, apis.dependencies.zelle, apis.models.zelle.northbound,                     #
+# Dependencies  : fastapi, apis.dependencies.types, apis.models.zelle.northbound,                     #
 #                 apis.services.zelle.event_service.                                                  #
 # Modifications : 2026-07-18 Shane Reddy — Initial version.                                           #
 #                                                                                                     #
@@ -37,14 +37,17 @@ sys.dont_write_bytecode = True
 
 import logging
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
 # Internal imports
 
-from src.apis.dependencies.zelle import get_correlation_id, get_service, require_client_id
+from src.apis.dependencies.types import (
+    ZelleClientIdDependency,
+    ZelleCorrelationIdDependency,
+    ZelleEventServiceDependency,
+)
 from src.apis.models.zelle.northbound import ResolveRequest
-from src.apis.services.zelle.event_service import EventService
 
 # Local variables
 
@@ -64,9 +67,9 @@ admin_router = APIRouter(
 async def resolve_event(
     event_id: str,
     payload: ResolveRequest,
-    correlation_id: str = Depends(get_correlation_id),
-    client_id: str = Depends(require_client_id),
-    service: EventService = Depends(get_service),
+    correlation_id: ZelleCorrelationIdDependency,
+    client_id: ZelleClientIdDependency,
+    service: ZelleEventServiceDependency,
     ) -> JSONResponse:
 
     """

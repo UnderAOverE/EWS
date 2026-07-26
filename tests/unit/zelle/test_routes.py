@@ -15,7 +15,7 @@
 #                 end-to-end schedule -> start -> complete, envelope shape on errors, header          #
 #                 enforcement, correlation echo, and the admin resolve route.                         #
 # Dependencies  : fastapi, httpx, pytest, mongomock_motor, fake_ews.app,                              #
-#                 apis.dependencies.zelle.                                                            #
+#                 apis.dependencies.services.zelle.                                                   #
 # Modifications : 2026-07-18 Shane Reddy — Initial version.                                           #
 #                                                                                                     #
 # Contact       : shanevreddy@gmail.com.                                                              #
@@ -48,7 +48,7 @@ from mongomock_motor import AsyncMongoMockClient
 # Internal imports
 
 from src.apis.config.zelle import ZelleSettings
-from src.apis.dependencies.zelle import register_zelle
+from src.apis.dependencies.services.zelle import register_zelle
 from src.apis.repositories.zelle.indexes import create_zelle_indexes
 from src.fake_ews.app import create_fake_ews_app
 

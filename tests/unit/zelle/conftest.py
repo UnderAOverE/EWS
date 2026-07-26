@@ -87,7 +87,6 @@ def settings(signing_key_path: Path) -> ZelleSettings:
     """
 
     return ZelleSettings(
-        environment="fake",
         api_base_url="http://fake-ews/zoms",
         token_url="http://fake-ews/token",
         token_aud="http://fake-ews",
