@@ -28,8 +28,8 @@
 Routes layer: thin FastAPI routers grouped per bounded context (currently ``zelle``). Handlers
 validate, delegate to services, and translate results — no business logic lives here. The zelle
 routers are re-exported here under host-app naming so the host ``main.py`` can include them the
-same way it includes the ose/saas routers; when the host includes them itself, call
-``register_zelle(..., include_routers=False)``.
+same way it includes the ose/saas routers; the service itself is built in the lifespan via
+``ZelleService.get_service`` and exception handlers via ``add_zelle_exception_handlers(app)``.
 """
 
 

@@ -10,7 +10,7 @@
 # Version       : 1.0.0.                                                                              #
 # Author        : Shane Reddy.                                                                        #
 #                                                                                                     #
-# Explanation   : Full-ASGI route tests: register_zelle on a fresh FastAPI app, southbound            #
+# Explanation   : Full-ASGI route tests: ZelleService.get_service on a fresh FastAPI app,             #
 #                 traffic served by the fake EWS over ASGITransport (real TokenBroker included),      #
 #                 end-to-end schedule -> start -> complete, envelope shape on errors, header          #
 #                 enforcement, correlation echo, and the admin resolve route.                         #
@@ -48,7 +48,9 @@ from mongomock_motor import AsyncMongoMockClient
 # Internal imports
 
 from src.apis.config.zelle import ZelleSettings
-from src.apis.dependencies.services.zelle import ZelleRuntime, register_zelle
+from src.apis.dependencies.services.zelle import add_zelle_exception_handlers
+from src.apis.routes import zelle_admin_router, zelle_events_router
+from src.apis.services.zelle.service import ZelleService
 from src.fake_ews.app import create_fake_ews_app
 
 # Local variables
@@ -64,28 +66,64 @@ EVENTS_PATH = "/v1/maintenance-events"
 # ----------------------------------------------------------------------------------------------------#
 
 
-async def _ensure_zelle_indexes(runtime: ZelleRuntime) -> None:
+async def _ensure_zelle_indexes(service: ZelleService) -> None:
 
     """
-    Create the indexes a provisioned database would have; register_zelle never creates them, so
-    the tests set them up the way the ops runbook does.
+    Create the indexes a provisioned database would have; the service never creates them, so the
+    tests set them up the way the ops runbook does.
 
-    :param runtime: The wired zelle runtime returned by register_zelle.
-    :type runtime: ZelleRuntime
+    :param service: The wired ZelleService.
+    :type service: ZelleService
     :return: None.
     :rtype: None
     """
 
-    await runtime.events.ensure_indexes()
-    await runtime.idempotency.ensure_indexes()
-    await runtime.audit.ensure_indexes()
-    await runtime.leases.ensure_indexes()
+    await service.events.ensure_indexes()
+    await service.idempotency.ensure_indexes()
+    await service.audit.ensure_indexes()
+    await service.leases.ensure_indexes()
+# endDef
+
+
+async def _wire_app(
+    settings: ZelleSettings,
+    mongo_client: AsyncMongoMockClient,
+    southbound: httpx.AsyncClient,
+    ) -> FastAPI:
+
+    """
+    Wire a FastAPI app the host-app way: include the routers, register the exception handlers,
+    build the service via ZelleService.get_service, run the startup sweep, and provision indexes.
+
+    :param settings: Zelle facade settings.
+    :type settings: ZelleSettings
+    :param mongo_client: The mock Motor client.
+    :type mongo_client: AsyncMongoMockClient
+    :param southbound: The injected fake-EWS HTTP client.
+    :type southbound: httpx.AsyncClient
+    :return: The wired application.
+    :rtype: FastAPI
+    """
+
+    app = FastAPI()
+    app.include_router(zelle_events_router)
+    app.include_router(zelle_admin_router)
+    add_zelle_exception_handlers(app)
+    service = await ZelleService.get_service(
+        mongo_client=mongo_client,
+        settings=settings,
+        http_client=southbound,
+    )
+    app.state.zelle_service = service
+    await service.startup_sweep()
+    await _ensure_zelle_indexes(service)
+    return app
 # endDef
 
 
 async def _build_consumer(
     settings: ZelleSettings,
-    database: AsyncMongoMockClient,
+    mongo_client: AsyncMongoMockClient,
     ) -> tuple[httpx.AsyncClient, httpx.AsyncClient]:
 
     """
@@ -97,10 +135,7 @@ async def _build_consumer(
         transport=httpx.ASGITransport(app=create_fake_ews_app()),
         base_url="http://fake-ews",
     )
-    app = FastAPI()
-    runtime = await register_zelle(app, settings, database, http_client=southbound)
-    # register_zelle no longer creates indexes; provision them as production would before serving.
-    await _ensure_zelle_indexes(runtime)
+    app = await _wire_app(settings, mongo_client, southbound)
     consumer = httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),
         base_url="http://facade",
@@ -112,14 +147,14 @@ async def _build_consumer(
 @pytest.fixture
 async def consumer(
     settings: ZelleSettings,
-    database: AsyncMongoMockClient,
+    mongo_client: AsyncMongoMockClient,
     ) -> AsyncIterator[httpx.AsyncClient]:
 
     """
     A northbound consumer client against a fully-wired facade backed by the fake EWS.
     """
 
-    north, south = await _build_consumer(settings, database)
+    north, south = await _build_consumer(settings, mongo_client)
     yield north
     await north.aclose()
     await south.aclose()
@@ -217,7 +252,7 @@ async def test_allowlist_rejects_unknown_client(
     """
 
     restricted = settings.model_copy(update={"client_allowlist": ["allowed-app"]})
-    north, south = await _build_consumer(restricted, AsyncMongoMockClient()["zelle_tests"])
+    north, south = await _build_consumer(restricted, AsyncMongoMockClient())
     try:
         response = await north.post(
             EVENTS_PATH,
@@ -387,38 +422,21 @@ def test_package_reexports_match_router_objects() -> None:
 # endDef
 
 
-async def test_host_style_wiring_without_double_registration(
+async def test_host_style_wiring_serves_traffic(
     settings: ZelleSettings,
-    database: AsyncMongoMockClient,
+    mongo_client: AsyncMongoMockClient,
     ) -> None:
 
     """
-    The host-app pattern — include the re-exported routers in main.py, then
-    register_zelle(include_routers=False) — serves traffic with each route registered
-    exactly once.
+    The host-app pattern — routers included in main.py, exception handlers registered, and the
+    service created via ZelleService.get_service in the lifespan — serves traffic end to end.
     """
-
-    from src.apis.routes import zelle_admin_router, zelle_events_router
 
     southbound = httpx.AsyncClient(
         transport=httpx.ASGITransport(app=create_fake_ews_app()),
         base_url="http://fake-ews",
     )
-    app = FastAPI()
-    # Mirrors the host main.py: routers included at module scope, wiring in the lifespan.
-    app.include_router(zelle_events_router)
-    app.include_router(zelle_admin_router)
-    routes_before = len(app.routes)
-    runtime = await register_zelle(
-        app,
-        settings,
-        database,
-        http_client=southbound,
-        include_routers=False,
-    )
-    await _ensure_zelle_indexes(runtime)
-    # include_routers=False must not add any routes on top of the host's own includes.
-    assert len(app.routes) == routes_before
+    app = await _wire_app(settings, mongo_client, southbound)
     consumer = httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),
         base_url="http://facade",

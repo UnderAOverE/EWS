@@ -125,11 +125,13 @@ class ZelleSettings(BaseSettings):
     watchdog_interval_seconds: float = 60.0
     watchdog_grace_seconds: float = 900.0
     # Email alerting: the watchdog reuses the host application's injected EmailService (see
-    # register_zelle), so there is no SMTP config here. This flag is forwarded as
+    # ZelleService.get_service), so there is no SMTP config here. This flag is forwarded as
     # EmailService.send_alert(only_production=...); True keeps stuck-event emails production-only,
     # matching the host convention.
     alert_only_in_production: bool = True
-    # Mongo.
+    # Mongo. mongo_database_name selects the database on the host's injected Motor client;
+    # collections are prefixed with mongo_collection_prefix within it.
+    mongo_database_name: str
     mongo_collection_prefix: str = "zelle"
 
     @model_validator(mode="before")

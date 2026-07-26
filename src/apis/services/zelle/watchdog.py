@@ -65,7 +65,7 @@ class AlertSender(Protocol):
 
     """
     Port for sending operational alert email out of the watchdog. Satisfied structurally by the
-    host application's ``EmailService`` (``send_alert``), injected via register_zelle — the
+    host application's ``EmailService`` (``send_alert``), injected via ZelleService.get_service —
     watchdog never constructs an email client and never re-implements prod gating (the host's
     EmailService honours ``only_production`` itself).
     """

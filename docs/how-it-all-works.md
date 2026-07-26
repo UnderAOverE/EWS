@@ -74,16 +74,23 @@ code (`EventService._build_ews_payload`), and nowhere else.
 Heads-up so nobody looks for a `main.py` that isn't here: **this repo is not
 a standalone app.** It is the `zelle` "bounded context" that gets **mounted
 into a bigger host FastAPI application** (`fdn-c-amp-fapis-py`) alongside
-sibling modules. The host app calls our `register_zelle(...)` function during
-startup and hands us things it already owns:
+sibling modules. The host app builds our service in its lifespan with
+`await ZelleService.get_service(mongo_client=…, settings=…, email_service=…)`
+— the same `get_service(cls, mongo_client)` factory pattern its other services
+(e.g. `OSEFetchService`) use — and stores it on `app.state.zelle_service`. It
+hands us:
 
-1. A shared HTTP client (used for all EWS calls),
-2. A MongoDB database (where we store event state, the audit trail, and
-   idempotency records), and
-3. Its `EmailService` (optional — used by the watchdog for stuck-event alerts;
-   we reuse it rather than shipping our own mailer).
+1. Its **MongoDB client** (we use `settings.mongo_database_name` to pick the
+   database for event state, the audit trail, and idempotency records),
+2. Its **`EmailService`** (optional — used by the watchdog for stuck-event
+   alerts; we reuse it rather than shipping our own mailer).
 
-So "deploying this" means the host app imports it and calls `register_zelle`.
+We build our **own southbound (mTLS) HTTP client** from settings — it isn't
+injected. The host also includes our routers, registers our exception handlers
+(`add_zelle_exception_handlers(app)`), and calls `service.aclose()` on
+shutdown.
+
+So "deploying this" means the host imports it and calls `ZelleService.get_service`.
 The only thing in this repo you can run on its own is a **fake EWS stub**
 (`src/fake_ews/app.py`) used for local testing — it pretends to be EWS so you
 can exercise the whole flow without touching the real vendor.
@@ -357,6 +364,10 @@ can also pass them in directly). The important ones:
 | `ZELLE_CLIENT_ID` | Our client identity (secret) |
 | `ZELLE_SIGNING_KID` | Key id EWS has registered for us |
 | `ZELLE_SIGNING_KEY_PATH` | Path to the RS256 **private key** on disk (never in git, never in env) |
+| `ZELLE_CA_CERTIFICATE_PATH` | Private CA bundle to trust EWS (omit → system CAs) — for the zelle-owned mTLS HTTP client |
+| `ZELLE_CLIENT_CERTIFICATE_PATH` / `ZELLE_CLIENT_KEY_PATH` | The EWS **mTLS** client keypair (both or neither — a half-set pair fails startup); crown jewels, mounted read-only |
+| `ZELLE_VERIFY_SSL` | TLS verification (default `true`); set `false` only for non-prod |
+| `ZELLE_MONGO_DATABASE_NAME` | Which database on the host's Mongo client the `zelle_*` collections live in |
 | `ZELLE_ORG_ID`, `ZELLE_PARTICIPANT_NAME`, `ZELLE_SUBMITTED_NAME`, `ZELLE_CONTACT_*` | The org identity + contact block auto-injected into every EWS schedule |
 | `ZELLE_CLIENT_ALLOWLIST` | Which `X-Client-Id`s may call at all (empty = allow any — **dev only**) |
 | `ZELLE_LIFECYCLE_CLIENT_ALLOWLIST` | Which clients may start/complete/cancel (empty = fall back to the general allowlist) |
@@ -365,7 +376,7 @@ can also pass them in directly). The important ones:
 | `ZELLE_ALERT_ONLY_IN_PRODUCTION` | Whether watchdog alert emails are prod-only (default `true`). Passed straight through to your `EmailService.send_alert(only_production=…)`. |
 | breaker / timeout knobs | Resilience tuning (sensible defaults built in) |
 
-**Watchdog email** reuses your host application's existing `EmailService` — it is **injected** into `register_zelle(app, settings, http_client, database, email_service=…)`, exactly like the shared `http_client` and `database`. There's no SMTP config here and no new email dependency; the module never builds its own mailer, and your `EmailService` already handles prod-gating via `only_production`. If you don't inject an `EmailService`, the watchdog is log-only.
+**Watchdog email** reuses your host application's existing `EmailService` — it is **injected** into `ZelleService.get_service(mongo_client=…, settings=…, email_service=…)`. There's no SMTP config here and no new email dependency; the module never builds its own mailer, and your `EmailService` already handles prod-gating via `only_production`. If you don't inject an `EmailService`, the watchdog is log-only.
 
 The **signing private key is the crown jewel** — it lives in the bank's
 secret store, mounted read-only. It never goes in the repo, committed YAML,
@@ -510,7 +521,8 @@ threads.
 | The endpoints | `src/apis/routes/zelle/events.py`, `.../admin.py` |
 | The request/response shapes teams see | `src/apis/models/zelle/northbound.py` |
 | The rules, state machine, north↔south translation | `src/apis/services/zelle/event_service.py` |
-| Wiring (`register_zelle`) + request providers | `src/apis/dependencies/services/zelle.py` |
+| The service + `get_service` factory (mTLS client, watchdog, aclose) | `src/apis/services/zelle/service.py` |
+| Request providers + `add_zelle_exception_handlers` | `src/apis/dependencies/services/zelle.py` |
 | Dependency aliases used by routes | `src/apis/dependencies/types.py` |
 | The token flow | `src/apis/services/zelle/token_broker.py` |
 | The EWS calls | `src/apis/services/zelle/zoms_client.py` |
