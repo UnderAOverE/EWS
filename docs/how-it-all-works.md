@@ -75,11 +75,13 @@ Heads-up so nobody looks for a `main.py` that isn't here: **this repo is not
 a standalone app.** It is the `zelle` "bounded context" that gets **mounted
 into a bigger host FastAPI application** (`fdn-c-amp-fapis-py`) alongside
 sibling modules. The host app calls our `register_zelle(...)` function during
-startup and hands us two things it already owns:
+startup and hands us things it already owns:
 
-1. A shared HTTP client (used for all EWS calls), and
+1. A shared HTTP client (used for all EWS calls),
 2. A MongoDB database (where we store event state, the audit trail, and
-   idempotency records).
+   idempotency records), and
+3. Its `EmailService` (optional — used by the watchdog for stuck-event alerts;
+   we reuse it rather than shipping our own mailer).
 
 So "deploying this" means the host app imports it and calls `register_zelle`.
 The only thing in this repo you can run on its own is a **fake EWS stub**
@@ -336,8 +338,8 @@ Between the two sides, the facade does the grown-up work:
   This is your forensic record of who did what, when, and how EWS responded
   (with secrets and PII masked).
 - **Watchdog** (optional). A background task that notices events stuck too
-  long and raises a loud `CRITICAL` log — and, when email alerting is
-  configured, sends an email alert too — so an operator can step in.
+  long and raises a loud `CRITICAL` log — and, when your host `EmailService`
+  is injected, emails an alert too — so an operator can step in.
 
 ---
 
@@ -348,10 +350,10 @@ can also pass them in directly). The important ones:
 
 | Setting | What it is |
 |---|---|
-| `ZELLE_ENVIRONMENT` | `fake`, `cat`, or `prod`. **Selects the ZOMS base URL for you** — `cat`→CAT, `prod`→PROD — so lower envs point at CAT and prod at PROD without hand-set URLs. |
-| `ZELLE_API_BASE_URL` | ZOMS base URL. **Optional for `cat`/`prod`** (auto-derived from `ZELLE_ENVIRONMENT`); set it to override, or **required for `fake`** (point it at your local stub). |
-| `ZELLE_TOKEN_URL` | EWS auth server token endpoint. **Explicit/required** — not auto-derived (the vendor doc flags the token URL as unconfirmed). |
-| `ZELLE_TOKEN_AUD` / `ZELLE_TOKEN_SCOPE` | Audience and scope for the token (audience explicit/required). |
+| `ZELLE_IS_PRODUCTION` | Prod flag. **Selects CAT vs PROD URLs for you** — `false`→CAT, `true`→PROD. The host passes its own `IS_PRODUCTION_ENVIRONMENT` here, so the module reuses your existing prod detection rather than a separate env var. |
+| `ZELLE_API_BASE_URL` | ZOMS base URL. **Optional** — auto-derived from `ZELLE_IS_PRODUCTION`; set it only to override (that's how a local/fake deployment points at its stub). |
+| `ZELLE_TOKEN_URL` | EWS auth server token endpoint. **Optional** — auto-derived from `ZELLE_IS_PRODUCTION` too; override once EWS confirms it (the vendor doc flags the token URL as unconfirmed). |
+| `ZELLE_TOKEN_AUD` / `ZELLE_TOKEN_SCOPE` | Audience and scope for the token. Audience is **explicit/required** (not derived — unconfirmed). |
 | `ZELLE_CLIENT_ID` | Our client identity (secret) |
 | `ZELLE_SIGNING_KID` | Key id EWS has registered for us |
 | `ZELLE_SIGNING_KEY_PATH` | Path to the RS256 **private key** on disk (never in git, never in env) |
@@ -360,32 +362,30 @@ can also pass them in directly). The important ones:
 | `ZELLE_LIFECYCLE_CLIENT_ALLOWLIST` | Which clients may start/complete/cancel (empty = fall back to the general allowlist) |
 | `ZELLE_DEFAULT_HOLD_MODE` | Hold mode when the caller omits one |
 | `ZELLE_WATCHDOG_ENABLED` / `_INTERVAL_SECONDS` / `_GRACE_SECONDS` | Turn the stuck-event watchdog on (default off), and tune its scan interval (60s) and grace (900s) |
-| `ZELLE_ALERT_EMAIL_ENABLED` | Turn watchdog **email** alerts on (default off). When on, `ZELLE_SMTP_HOST`, `ZELLE_ALERT_EMAIL_FROM`, and `ZELLE_ALERT_EMAIL_TO` are required |
-| `ZELLE_SMTP_HOST` / `_PORT` / `_USE_TLS` / `_USERNAME` / `_PASSWORD` | SMTP relay for alert email. `_USE_TLS` selects STARTTLS; username/password optional (relays are often unauthenticated); `_PASSWORD` is a secret |
-| `ZELLE_ALERT_EMAIL_FROM` / `ZELLE_ALERT_EMAIL_TO` | Alert From address and recipient list (`TO` is a JSON list, e.g. `["oncall@bank.example"]`) |
+| `ZELLE_ALERT_ONLY_IN_PRODUCTION` | Whether watchdog alert emails are prod-only (default `true`). Passed straight through to your `EmailService.send_alert(only_production=…)`. |
 | breaker / timeout knobs | Resilience tuning (sensible defaults built in) |
+
+**Watchdog email** reuses your host application's existing `EmailService` — it is **injected** into `register_zelle(app, settings, http_client, database, email_service=…)`, exactly like the shared `http_client` and `database`. There's no SMTP config here and no new email dependency; the module never builds its own mailer, and your `EmailService` already handles prod-gating via `only_production`. If you don't inject an `EmailService`, the watchdog is log-only.
 
 The **signing private key is the crown jewel** — it lives in the bank's
 secret store, mounted read-only. It never goes in the repo, committed YAML,
 or a checked-in env file.
 
-### One-time setup: database indexes
+### One-time setup: database collections and indexes
 
 The service **does not create MongoDB indexes on startup** — pods must not run
 DDL on every restart (and the runtime DB user may not even have the
-privilege). Instead, create them **once** when provisioning the database
-(and again only if the index set changes):
+privilege). Create the four `zelle_*` collections' indexes **once** by hand
+(or via your DBA) when provisioning the database, and again only if the index
+set changes.
 
-```bash
-ZELLE_MONGO_URI="mongodb://…" ZELLE_MONGO_DB="ampdb" ZELLE_MONGO_COLLECTION_PREFIX="zelle" \
-  python -m src.apis.repositories.zelle.indexes
-```
-
-This creates every index the four `zelle_*` collections need — including the
-**unique idempotency index** and the **TTL lease index**, which are
-load-bearing for correctness, so they must exist before the service serves
-traffic. (The host app can also call `create_zelle_indexes(database, prefix)`
-directly from a provisioning step.)
+The exact collections, indexes, ready-to-run `mongosh` commands, and **why
+each one is needed** live in
+**[database-collections-and-indexes.md](database-collections-and-indexes.md)**.
+The two that matter for *correctness* are the **unique idempotency index**
+(`zelle_idempotency` on `{client_id, key}`) and the **TTL lease index**
+(`zelle_leases` on `{expires_at}`); they must exist before the service serves
+traffic.
 
 ---
 
@@ -510,10 +510,14 @@ threads.
 | The endpoints | `src/apis/routes/zelle/events.py`, `.../admin.py` |
 | The request/response shapes teams see | `src/apis/models/zelle/northbound.py` |
 | The rules, state machine, north↔south translation | `src/apis/services/zelle/event_service.py` |
+| Wiring (`register_zelle`) + request providers | `src/apis/dependencies/services/zelle.py` |
+| Dependency aliases used by routes | `src/apis/dependencies/types.py` |
 | The token flow | `src/apis/services/zelle/token_broker.py` |
 | The EWS calls | `src/apis/services/zelle/zoms_client.py` |
+| The watchdog (stuck-event alerter, reuses host EmailService) | `src/apis/services/zelle/watchdog.py` |
 | The exact EWS wire formats | `src/apis/models/zelle/southbound.py` + [zoms-api-reference.md](zoms-api-reference.md) |
 | What to configure | `src/apis/config/zelle.py` |
+| Collections + indexes to create | [database-collections-and-indexes.md](database-collections-and-indexes.md) |
 | A fake EWS to test against | `src/fake_ews/app.py` |
 
 ---

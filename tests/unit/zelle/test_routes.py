@@ -15,7 +15,7 @@
 #                 end-to-end schedule -> start -> complete, envelope shape on errors, header          #
 #                 enforcement, correlation echo, and the admin resolve route.                         #
 # Dependencies  : fastapi, httpx, pytest, mongomock_motor, fake_ews.app,                              #
-#                 apis.dependencies.zelle.                                                            #
+#                 apis.dependencies.services.zelle.                                                   #
 # Modifications : 2026-07-18 Shane Reddy — Initial version.                                           #
 #                                                                                                     #
 # Contact       : shanevreddy@gmail.com.                                                              #
@@ -48,8 +48,7 @@ from mongomock_motor import AsyncMongoMockClient
 # Internal imports
 
 from src.apis.config.zelle import ZelleSettings
-from src.apis.dependencies.zelle import register_zelle
-from src.apis.repositories.zelle.indexes import create_zelle_indexes
+from src.apis.dependencies.services.zelle import ZelleRuntime, register_zelle
 from src.fake_ews.app import create_fake_ews_app
 
 # Local variables
@@ -63,6 +62,25 @@ EVENTS_PATH = "/v1/maintenance-events"
 # ----------------------------------------------------------------------------------------------------#
 # Classes or functions.                                                                               #
 # ----------------------------------------------------------------------------------------------------#
+
+
+async def _ensure_zelle_indexes(runtime: ZelleRuntime) -> None:
+
+    """
+    Create the indexes a provisioned database would have; register_zelle never creates them, so
+    the tests set them up the way the ops runbook does.
+
+    :param runtime: The wired zelle runtime returned by register_zelle.
+    :type runtime: ZelleRuntime
+    :return: None.
+    :rtype: None
+    """
+
+    await runtime.events.ensure_indexes()
+    await runtime.idempotency.ensure_indexes()
+    await runtime.audit.ensure_indexes()
+    await runtime.leases.ensure_indexes()
+# endDef
 
 
 async def _build_consumer(
@@ -80,9 +98,9 @@ async def _build_consumer(
         base_url="http://fake-ews",
     )
     app = FastAPI()
-    await register_zelle(app, settings, southbound, database)
+    runtime = await register_zelle(app, settings, southbound, database)
     # register_zelle no longer creates indexes; provision them as production would before serving.
-    await create_zelle_indexes(database, settings.mongo_collection_prefix)
+    await _ensure_zelle_indexes(runtime)
     consumer = httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),
         base_url="http://facade",
@@ -391,8 +409,8 @@ async def test_host_style_wiring_without_double_registration(
     app.include_router(zelle_events_router)
     app.include_router(zelle_admin_router)
     routes_before = len(app.routes)
-    await register_zelle(app, settings, southbound, database, include_routers=False)
-    await create_zelle_indexes(database, settings.mongo_collection_prefix)
+    runtime = await register_zelle(app, settings, southbound, database, include_routers=False)
+    await _ensure_zelle_indexes(runtime)
     # include_routers=False must not add any routes on top of the host's own includes.
     assert len(app.routes) == routes_before
     consumer = httpx.AsyncClient(

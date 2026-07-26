@@ -14,7 +14,7 @@
 #                 lifecycle verbs (start/complete/cancel with typed ticket confirmation and           #
 #                 dry-run), and local reads. Handlers stay thin — resolve dependencies, call          #
 #                 the service, serialize; every response carries X-Correlation-Id.                    #
-# Dependencies  : fastapi, apis.dependencies.zelle, apis.models.zelle.enums,                          #
+# Dependencies  : fastapi, apis.dependencies.types, apis.models.zelle.enums,                          #
 #                 apis.models.zelle.errors, apis.models.zelle.northbound,                             #
 #                 apis.services.zelle.event_service.                                                  #
 # Modifications : 2026-07-18 Shane Reddy — Initial version.                                           #
@@ -38,12 +38,16 @@ sys.dont_write_bytecode = True
 
 import logging
 
-from fastapi import APIRouter, Depends, Header
+from fastapi import APIRouter, Header
 from fastapi.responses import JSONResponse
 
 # Internal imports
 
-from src.apis.dependencies.zelle import get_correlation_id, get_service, require_client_id
+from src.apis.dependencies.types import (
+    ZelleClientIdDependency,
+    ZelleCorrelationIdDependency,
+    ZelleEventServiceDependency,
+)
 from src.apis.models.zelle.enums import EventStatus, LifecycleAction
 from src.apis.models.zelle.errors import ValidationFailedError
 from src.apis.models.zelle.northbound import ScheduleEventRequest
@@ -120,9 +124,9 @@ async def _run_lifecycle(
 @events_router.post("")
 async def schedule_event(
     payload: ScheduleEventRequest,
-    correlation_id: str = Depends(get_correlation_id),
-    client_id: str = Depends(require_client_id),
-    service: EventService = Depends(get_service),
+    correlation_id: ZelleCorrelationIdDependency,
+    client_id: ZelleClientIdDependency,
+    service: ZelleEventServiceDependency,
     idempotency_key: str | None = Header(None),
     ) -> JSONResponse:
 
@@ -161,9 +165,9 @@ async def schedule_event(
 @events_router.post("/{event_id}/start")
 async def start_event(
     event_id: str,
-    correlation_id: str = Depends(get_correlation_id),
-    client_id: str = Depends(require_client_id),
-    service: EventService = Depends(get_service),
+    correlation_id: ZelleCorrelationIdDependency,
+    client_id: ZelleClientIdDependency,
+    service: ZelleEventServiceDependency,
     x_confirm_ticket: str | None = Header(None),
     dry_run: bool = False,
     ) -> JSONResponse:
@@ -202,9 +206,9 @@ async def start_event(
 @events_router.post("/{event_id}/complete")
 async def complete_event(
     event_id: str,
-    correlation_id: str = Depends(get_correlation_id),
-    client_id: str = Depends(require_client_id),
-    service: EventService = Depends(get_service),
+    correlation_id: ZelleCorrelationIdDependency,
+    client_id: ZelleClientIdDependency,
+    service: ZelleEventServiceDependency,
     x_confirm_ticket: str | None = Header(None),
     dry_run: bool = False,
     ) -> JSONResponse:
@@ -243,9 +247,9 @@ async def complete_event(
 @events_router.post("/{event_id}/cancel")
 async def cancel_event(
     event_id: str,
-    correlation_id: str = Depends(get_correlation_id),
-    client_id: str = Depends(require_client_id),
-    service: EventService = Depends(get_service),
+    correlation_id: ZelleCorrelationIdDependency,
+    client_id: ZelleClientIdDependency,
+    service: ZelleEventServiceDependency,
     x_confirm_ticket: str | None = Header(None),
     dry_run: bool = False,
     ) -> JSONResponse:
@@ -283,10 +287,10 @@ async def cancel_event(
 
 @events_router.get("")
 async def list_events(
+    correlation_id: ZelleCorrelationIdDependency,
+    client_id: ZelleClientIdDependency,
+    service: ZelleEventServiceDependency,
     status: EventStatus | None = None,
-    correlation_id: str = Depends(get_correlation_id),
-    client_id: str = Depends(require_client_id),
-    service: EventService = Depends(get_service),
     ) -> JSONResponse:
 
     """
@@ -316,9 +320,9 @@ async def list_events(
 @events_router.get("/{event_id}")
 async def get_event(
     event_id: str,
-    correlation_id: str = Depends(get_correlation_id),
-    client_id: str = Depends(require_client_id),
-    service: EventService = Depends(get_service),
+    correlation_id: ZelleCorrelationIdDependency,
+    client_id: ZelleClientIdDependency,
+    service: ZelleEventServiceDependency,
     ) -> JSONResponse:
 
     """
