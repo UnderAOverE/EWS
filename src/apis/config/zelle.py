@@ -36,6 +36,7 @@ sys.dont_write_bytecode = True
 # External imports
 
 import logging
+from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Any, Self
 
@@ -184,6 +185,26 @@ class ZelleSettings(BaseSettings):
         return self
     # endDef
 # endClass
+
+
+@lru_cache(maxsize=1)
+def get_zelle_settings() -> ZelleSettings:
+
+    """
+    Module-level accessor for the zelle settings, built once from the environment — the way the
+    host's ``environment_settings`` is a single module-level config object. ZelleService.get_service
+    reads this when no settings are injected. ``is_production`` then comes from ``ZELLE_IS_PRODUCTION``
+    (set it from the host's IS_PRODUCTION_ENVIRONMENT); inject settings explicitly to pass the flag
+    directly instead.
+
+    :return: The process-wide zelle settings.
+    :rtype: ZelleSettings
+    """
+
+    # BaseSettings populates the required fields from the environment at runtime; mypy cannot see
+    # that, so the call-arg check is suppressed at this single sanctioned construction site.
+    return ZelleSettings()  # type: ignore[call-arg]
+# endDef
 
 
 # end_apis/config/zelle.py

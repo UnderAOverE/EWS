@@ -75,10 +75,11 @@ Heads-up so nobody looks for a `main.py` that isn't here: **this repo is not
 a standalone app.** It is the `zelle` "bounded context" that gets **mounted
 into a bigger host FastAPI application** (`fdn-c-amp-fapis-py`) alongside
 sibling modules. The host app builds our service in its lifespan with
-`await ZelleService.get_service(mongo_client=…, settings=…, email_service=…)`
-— the same `get_service(cls, mongo_client)` factory pattern its other services
-(e.g. `OSEFetchService`) use — and stores it on `app.state.zelle_service`. It
-hands us:
+`await ZelleService.get_service(mongo_client=…, email_service=…)` — the same
+`get_service(cls, mongo_client)` factory pattern its other services (e.g.
+`OSEFetchService`) use, reading settings from a module-level accessor
+(`get_zelle_settings`) just like their `environment_settings` — and stores it
+on `app.state.zelle_service`. It hands us:
 
 1. Its **MongoDB client** (we use `settings.mongo_database_name` to pick the
    database for event state, the audit trail, and idempotency records),
@@ -357,7 +358,7 @@ can also pass them in directly). The important ones:
 
 | Setting | What it is |
 |---|---|
-| `ZELLE_IS_PRODUCTION` | Prod flag. **Selects CAT vs PROD URLs for you** — `false`→CAT, `true`→PROD. The host passes its own `IS_PRODUCTION_ENVIRONMENT` here, so the module reuses your existing prod detection rather than a separate env var. |
+| `ZELLE_IS_PRODUCTION` | Prod flag. **Selects CAT vs PROD URLs for you** — `false`→CAT, `true`→PROD. With module-level settings, set this from your host's `IS_PRODUCTION_ENVIRONMENT` in the deployment env (or inject `ZelleSettings(is_production=IS_PRODUCTION_ENVIRONMENT)` into `get_service` to pass the flag directly). |
 | `ZELLE_API_BASE_URL` | ZOMS base URL. **Optional** — auto-derived from `ZELLE_IS_PRODUCTION`; set it only to override (that's how a local/fake deployment points at its stub). |
 | `ZELLE_TOKEN_URL` | EWS auth server token endpoint. **Optional** — auto-derived from `ZELLE_IS_PRODUCTION` too; override once EWS confirms it (the vendor doc flags the token URL as unconfirmed). |
 | `ZELLE_TOKEN_AUD` / `ZELLE_TOKEN_SCOPE` | Audience and scope for the token. Audience is **explicit/required** (not derived — unconfirmed). |
@@ -376,7 +377,7 @@ can also pass them in directly). The important ones:
 | `ZELLE_ALERT_ONLY_IN_PRODUCTION` | Whether watchdog alert emails are prod-only (default `true`). Passed straight through to your `EmailService.send_alert(only_production=…)`. |
 | breaker / timeout knobs | Resilience tuning (sensible defaults built in) |
 
-**Watchdog email** reuses your host application's existing `EmailService` — it is **injected** into `ZelleService.get_service(mongo_client=…, settings=…, email_service=…)`. There's no SMTP config here and no new email dependency; the module never builds its own mailer, and your `EmailService` already handles prod-gating via `only_production`. If you don't inject an `EmailService`, the watchdog is log-only.
+**Watchdog email** reuses your host application's existing `EmailService` — it is **injected** into `ZelleService.get_service(mongo_client=…, email_service=…)`. There's no SMTP config here and no new email dependency; the module never builds its own mailer, and your `EmailService` already handles prod-gating via `only_production`. If you don't inject an `EmailService`, the watchdog is log-only.
 
 The **signing private key is the crown jewel** — it lives in the bank's
 secret store, mounted read-only. It never goes in the repo, committed YAML,

@@ -46,7 +46,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 
 # Internal imports
 
-from src.apis.config.zelle import ZelleSettings
+from src.apis.config.zelle import ZelleSettings, get_zelle_settings
 from src.apis.repositories.zelle.audit import AuditRepository
 from src.apis.repositories.zelle.events import EventsRepository
 from src.apis.repositories.zelle.idempotency import IdempotencyRepository
@@ -182,28 +182,33 @@ class ZelleService:
     async def get_service(
         cls,
         mongo_client: AsyncIOMotorClient[dict[str, Any]],
-        settings: ZelleSettings,
         email_service: AlertSender | None = None,
+        settings: ZelleSettings | None = None,
         http_client: httpx.AsyncClient | None = None,
         ) -> Self:
 
         """
-        Factory: build the full zelle object graph from the injected Motor client. The database is
+        Factory: build the full zelle object graph from the injected Motor client. Settings default
+        to the module-level :func:`get_zelle_settings` (like the host's ``environment_settings``) —
+        inject them only to override (tests, or to pass ``is_production`` directly). The database is
         selected by ``settings.mongo_database_name``; the southbound mTLS HTTP client is built from
         settings unless one is injected (tests pass a fake-EWS client, production omits it).
 
         :param mongo_client: The Motor client backing the repositories.
         :type mongo_client: AsyncIOMotorClient[dict[str, Any]]
-        :param settings: Zelle facade settings.
-        :type settings: ZelleSettings
         :param email_service: The host EmailService (AlertSender) for watchdog alerts, or None.
         :type email_service: AlertSender | None
+        :param settings: Zelle facade settings, or None to read the module-level accessor.
+        :type settings: ZelleSettings | None
         :param http_client: An HTTP client to use; None (production) builds and owns an mTLS one.
         :type http_client: httpx.AsyncClient | None
         :return: The wired service instance.
         :rtype: Self
         """
 
+        if settings is None:
+            settings = get_zelle_settings()
+        # endIf
         database = mongo_client[settings.mongo_database_name]
         owns_http_client = http_client is None
         if http_client is None:
