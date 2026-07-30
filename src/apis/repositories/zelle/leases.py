@@ -70,8 +70,8 @@ class LeaseRepository(
     upsert raises a duplicate-key error and is reported as not acquired.
     """
 
-    _database_name = DatabasesCollections.APPLICATION_MAIN_DATABASE
-    _collection_name = DatabasesCollections.ZELLE_LEASES_COLLECTION
+    _database_name: str = DatabasesCollections.APPLICATION_MAIN_DATABASE
+    _collection_name: str = DatabasesCollections.ZELLE_LEASES_COLLECTION
 
     async def ensure_indexes(self) -> None:
 

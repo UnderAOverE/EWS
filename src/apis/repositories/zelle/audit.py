@@ -63,8 +63,8 @@ class AuditRepository(BaseWriteMotorRepository[AuditRecord]):
     forensic evidence of an in-flight EWS mutation.
     """
 
-    _database_name = DatabasesCollections.APPLICATION_MAIN_DATABASE
-    _collection_name = DatabasesCollections.ZELLE_AUDIT_COLLECTION
+    _database_name: str = DatabasesCollections.APPLICATION_MAIN_DATABASE
+    _collection_name: str = DatabasesCollections.ZELLE_AUDIT_COLLECTION
 
     async def ensure_indexes(self) -> None:
 

@@ -81,8 +81,8 @@ class EventsRepository(BaseReadMotorRepository[EventRecord], BaseWriteMotorRepos
     atomic state-machine transition filter on ``event_id``.
     """
 
-    _database_name = DatabasesCollections.APPLICATION_MAIN_DATABASE
-    _collection_name = DatabasesCollections.ZELLE_EVENTS_COLLECTION
+    _database_name: str = DatabasesCollections.APPLICATION_MAIN_DATABASE
+    _collection_name: str = DatabasesCollections.ZELLE_EVENTS_COLLECTION
 
     async def ensure_indexes(self) -> None:
 

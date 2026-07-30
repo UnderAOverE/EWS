@@ -76,8 +76,8 @@ class IdempotencyRepository(
     409s).
     """
 
-    _database_name = DatabasesCollections.APPLICATION_MAIN_DATABASE
-    _collection_name = DatabasesCollections.ZELLE_IDEMPOTENCY_COLLECTION
+    _database_name: str = DatabasesCollections.APPLICATION_MAIN_DATABASE
+    _collection_name: str = DatabasesCollections.ZELLE_IDEMPOTENCY_COLLECTION
 
     async def ensure_indexes(self) -> None:
 
