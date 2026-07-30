@@ -38,7 +38,6 @@ sys.dont_write_bytecode = True
 
 import hashlib
 import json
-import logging
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -76,10 +75,10 @@ from src.apis.repositories.zelle.audit import AuditRepository
 from src.apis.repositories.zelle.events import EventsRepository
 from src.apis.repositories.zelle.idempotency import IdempotencyRepository
 from src.apis.services.zelle.zoms_client import ZomsClient
+from src.common.logger import logger
 
 # Local variables
 
-LOGGER = logging.getLogger(__name__)
 SCHEDULE_ACTION = "schedule"
 RESOLVE_ACTION = "resolve"
 # EWS success codes per docs/zoms-api-reference.md: schedule 201, lifecycle verbs 200.
@@ -246,6 +245,12 @@ class EventService:
         """
 
         self._require_schedule_allowed(client_id)
+        logger.info(
+            "schedule: client_id=%s ticket=%s idempotency_key=%s",
+            client_id,
+            request.ticket_number,
+            idempotency_key,
+        )
         body_hash = _canonical_body_hash(request)
         reclaimed = False
         if idempotency_key is not None:
@@ -682,6 +687,12 @@ class EventService:
             transition lost a concurrent race.
         """
 
+        logger.info(
+            "resolve: event_id=%s -> %s by client_id=%s",
+            event_id,
+            request.actual_status.value,
+            client_id,
+        )
         event = await self._events.get(event_id)
         if event is None:
             raise NotFoundError(f"No maintenance event with id {event_id}.")
@@ -749,7 +760,7 @@ class EventService:
         swept = await self._events.sweep_pending()
         for record in swept:
             # CRITICAL is the alert channel: host monitoring pages on critical log lines.
-            LOGGER.critical(
+            logger.critical(
                 "startup sweep: event %s (ticket %s) was PENDING at startup -> UNCERTAIN; "
                 "manual reconciliation with EWS required",
                 record.event_id,
@@ -939,7 +950,7 @@ class EventService:
             new_status=new_status,
         )
         if updated is None:
-            LOGGER.warning(
+            logger.warning(
                 "event %s changed state concurrently; could not mark %s",
                 event_id,
                 new_status.value,

@@ -37,7 +37,6 @@ sys.dont_write_bytecode = True
 # External imports
 
 import asyncio
-import logging
 import ssl
 from typing import Any, Self
 
@@ -58,10 +57,9 @@ from src.apis.services.zelle.event_service import EventService
 from src.apis.services.zelle.token_broker import TokenBroker
 from src.apis.services.zelle.watchdog import AlertSender, Watchdog
 from src.apis.services.zelle.zoms_client import ZomsClient
+from src.common.logger import logger
 
 # Local variables
-
-LOGGER = logging.getLogger(__name__)
 
 
 # ----------------------------------------------------------------------------------------------------#
@@ -228,6 +226,12 @@ class ZelleService:
             if settings.watchdog_enabled
             else None
         )
+        logger.info(
+            "zelle service built (is_production=%s watchdog_enabled=%s owns_http_client=%s)",
+            settings.is_production,
+            settings.watchdog_enabled,
+            owns_http_client,
+        )
         return cls(
             settings=settings,
             http_client=http_client,
@@ -267,6 +271,7 @@ class ZelleService:
         """
 
         if self.watchdog is not None:
+            logger.info("starting zelle watchdog task")
             self._watchdog_task = asyncio.create_task(self.watchdog.run_forever())
         # endIf
     # endDef
@@ -281,6 +286,7 @@ class ZelleService:
         :rtype: None
         """
 
+        logger.info("closing zelle service (owns_http_client=%s)", self.owns_http_client)
         if self.watchdog is not None and self._watchdog_task is not None:
             self.watchdog.stop()
             try:

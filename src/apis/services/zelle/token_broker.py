@@ -35,7 +35,6 @@ sys.dont_write_bytecode = True
 # External imports
 
 import asyncio
-import logging
 import time
 import uuid
 from datetime import datetime, timezone
@@ -53,10 +52,9 @@ from src.apis.models.zelle.errors import (
     RateLimitedError,
     UpstreamUnavailableError,
 )
+from src.common.logger import logger
 
 # Local variables
-
-LOGGER = logging.getLogger(__name__)
 CLIENT_ASSERTION_TYPE = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
 GRANT_TYPE = "client_credentials"
 # Assertion clock window: iat/nbf backdated for skew, short exp (architecture §3).
@@ -265,7 +263,7 @@ class TokenBroker:
             self._margin = max(MARGIN_FLOOR_SECONDS, MARGIN_TTL_FRACTION * ttl)
             self._expires_at = sent_at + ttl
             # Metadata only — the token itself is never logged.
-            LOGGER.info(
+            logger.info(
                 "token refreshed: ttl=%.0fs margin=%.0fs kid=%s",
                 ttl,
                 self._margin,
@@ -372,7 +370,7 @@ class TokenBroker:
                 # endWith
             except (httpx.TransportError, TimeoutError) as exc:
                 last_error = type(exc).__name__
-                LOGGER.warning("token attempt failed pre-response: %s", last_error)
+                logger.warning("token attempt failed pre-response: %s", last_error)
                 continue
             # endTryExcept
             status = response.status_code
@@ -409,7 +407,7 @@ class TokenBroker:
             # endIf
             # 5xx and anything unexpected: transient — retry within the budget.
             last_error = f"HTTP {status}"
-            LOGGER.warning("token attempt failed: %s", last_error)
+            logger.warning("token attempt failed: %s", last_error)
         # endFor
         self._breaker.record_failure()
         raise UpstreamUnavailableError(

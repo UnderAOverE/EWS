@@ -36,7 +36,6 @@ sys.dont_write_bytecode = True
 # External imports
 
 import asyncio
-import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Protocol
@@ -47,10 +46,10 @@ from src.apis.config.zelle import ZelleSettings
 from src.apis.models.zelle.records import EventRecord
 from src.apis.repositories.zelle.events import EventsRepository
 from src.apis.repositories.zelle.leases import LeaseRepository
+from src.common.logger import logger
 
 # Local variables
 
-LOGGER = logging.getLogger(__name__)
 LEASE_NAME = "zelle-watchdog"
 # Lease TTL is a multiple of the scan interval so a healthy holder never loses its lease.
 LEASE_TTL_INTERVALS = 2.0
@@ -101,7 +100,7 @@ class Watchdog:
     """
     Background stuck-event alerter. One instance per process; only the instance holding the
     Mongo lease scans, so an accidental scale-out produces idle replicas, not duplicate pagers.
-    Alerting is ``LOGGER.critical`` per stuck event — host monitoring pages on CRITICAL lines.
+    Alerting is ``logger.critical`` per stuck event — host monitoring pages on CRITICAL lines.
     """
 
     def __init__(
@@ -153,11 +152,11 @@ class Watchdog:
                 if holding:
                     await self.scan_once()
                 else:
-                    LOGGER.debug("watchdog lease held elsewhere; idling")
+                    logger.debug("watchdog lease held elsewhere; idling")
                 # endIfElse
             except Exception:
                 # Broad by design: a scan/lease failure must not kill the pager loop.
-                LOGGER.exception("watchdog iteration failed; will retry next interval")
+                logger.exception("watchdog iteration failed; will retry next interval")
             # endTryExcept
             try:
                 await asyncio.wait_for(self._stopped.wait(), timeout=interval)
@@ -181,7 +180,7 @@ class Watchdog:
         now = datetime.now(timezone.utc)
         stuck = await self._events.find_stuck(now, self._settings.watchdog_grace_seconds)
         for record in stuck:
-            LOGGER.critical(
+            logger.critical(
                 "stuck maintenance event: id=%s status=%s ticket=%s window=%s..%s — "
                 "manual intervention required (see RUNBOOK escalation path)",
                 record.event_id,
@@ -235,7 +234,7 @@ class Watchdog:
         except Exception:
             # Broad by design: an alert-send failure must not kill the pager loop; the CRITICAL
             # log lines already emitted remain the alert of record.
-            LOGGER.exception("watchdog email alert failed; CRITICAL logs remain the alert path")
+            logger.exception("watchdog email alert failed; CRITICAL logs remain the alert path")
         # endTryExcept
     # endDef
 

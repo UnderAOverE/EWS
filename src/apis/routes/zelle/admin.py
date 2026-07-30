@@ -35,8 +35,6 @@ sys.dont_write_bytecode = True
 
 # External imports
 
-import logging
-
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
@@ -48,10 +46,11 @@ from src.apis.dependencies.types import (
     ZelleEventServiceDependency,
 )
 from src.apis.models.zelle.northbound import ResolveRequest
+from src.common.constants import HTTPCodes
+from src.common.logger import logger
 
 # Local variables
 
-LOGGER = logging.getLogger(__name__)
 admin_router = APIRouter(
     prefix="/v1/admin/maintenance-events",
     tags=["zelle-admin"],
@@ -90,6 +89,12 @@ async def resolve_event(
     :rtype: JSONResponse
     """
 
+    logger.info(
+        "operator resolve event_id=%s actual_status=%s client_id=%s",
+        event_id,
+        payload.actual_status.value,
+        client_id,
+    )
     response = await service.resolve(
         event_id,
         payload,
@@ -97,7 +102,7 @@ async def resolve_event(
         correlation_id=correlation_id,
     )
     return JSONResponse(
-        status_code=200,
+        status_code=HTTPCodes.HTTP_SUCCESS,
         content=response.model_dump(mode="json", by_alias=True),
         headers={"X-Correlation-Id": correlation_id},
     )

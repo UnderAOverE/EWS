@@ -36,7 +36,6 @@ sys.dont_write_bytecode = True
 
 # External imports
 
-import logging
 import uuid
 
 from fastapi import FastAPI, Header, Request
@@ -53,10 +52,9 @@ from src.apis.models.zelle.errors import (
 )
 from src.apis.services.zelle.event_service import EventService
 from src.apis.services.zelle.service import ZelleService
+from src.common.logger import logger
 
 # Local variables
-
-LOGGER = logging.getLogger(__name__)
 CORRELATION_ID_PREFIX = "c-"
 
 
@@ -169,6 +167,7 @@ async def require_zelle_client_id(
     # endIf
     allowlist = _zelle_service(request).settings.client_allowlist
     if allowlist and x_client_id not in allowlist:
+        logger.warning("client not in allowlist rejected: %s", x_client_id)
         raise ForbiddenActionError("Client is not allowed to use the zelle facade.")
     # endIf
     return x_client_id

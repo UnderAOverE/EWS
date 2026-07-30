@@ -36,7 +36,6 @@ sys.dont_write_bytecode = True
 # External imports
 
 import asyncio
-import logging
 import time
 import uuid
 from typing import Any
@@ -60,10 +59,10 @@ from src.apis.models.zelle.southbound import (
     EwsScheduleResponse,
 )
 from src.apis.services.zelle.token_broker import TokenBroker, parse_retry_after
+from src.common.logger import logger
 
 # Local variables
 
-LOGGER = logging.getLogger(__name__)
 # Transient causes (connect failure / 5xx on schedule) get at most this many HTTP attempts.
 MAX_TRANSIENT_ATTEMPTS = 2
 SCHEDULE_OPERATION = "schedule"
@@ -297,6 +296,12 @@ class ZomsClient:
                 headers["idempotency-id"] = idempotency_id
             # endIf
             started = time.monotonic()
+            logger.debug(
+                "southbound POST %s request-id=%s attempt=%d",
+                url,
+                request_id,
+                len(request_ids),
+            )
             try:
                 response = await self._client.post(
                     url,
@@ -308,7 +313,7 @@ class ZomsClient:
                 # The request never left the facade — clean and retryable for every verb.
                 transient_failures += 1
                 if allow_transient_retry and transient_failures < MAX_TRANSIENT_ATTEMPTS:
-                    LOGGER.warning(
+                    logger.warning(
                         "POST %s pre-send failure (%s); retrying request_id=%s",
                         url,
                         type(exc).__name__,
@@ -332,7 +337,7 @@ class ZomsClient:
             # endTryExcept
             elapsed = time.monotonic() - started
             status = response.status_code
-            LOGGER.info(
+            logger.info(
                 "POST %s status=%s request_id=%s elapsed=%.3fs",
                 url,
                 status,
@@ -378,7 +383,7 @@ class ZomsClient:
             if allow_transient_retry:
                 transient_failures += 1
                 if transient_failures < MAX_TRANSIENT_ATTEMPTS:
-                    LOGGER.warning(
+                    logger.warning(
                         "POST %s returned HTTP %s; retrying request_id=%s",
                         url,
                         status,
@@ -413,13 +418,13 @@ class ZomsClient:
         try:
             data = response.json()
         except ValueError:
-            LOGGER.warning("schedule success body was not JSON; treating event id as absent")
+            logger.warning("schedule success body was not JSON; treating event id as absent")
             return EwsScheduleResponse()
         # endTryExcept
         try:
             return EwsScheduleResponse.model_validate(data)
         except ValidationError:
-            LOGGER.warning("schedule success body had unexpected shape; event id treated absent")
+            logger.warning("schedule success body had unexpected shape; event id treated absent")
             return EwsScheduleResponse()
         # endTryExcept
     # endDef

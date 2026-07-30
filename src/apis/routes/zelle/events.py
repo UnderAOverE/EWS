@@ -36,8 +36,6 @@ sys.dont_write_bytecode = True
 
 # External imports
 
-import logging
-
 from fastapi import APIRouter, Header
 from fastapi.responses import JSONResponse
 
@@ -52,11 +50,12 @@ from src.apis.models.zelle.enums import EventStatus, LifecycleAction
 from src.apis.models.zelle.errors import ValidationFailedError
 from src.apis.models.zelle.northbound import ScheduleEventRequest
 from src.apis.services.zelle.event_service import EventService
+from src.common.constants import HTTPCodes
+from src.common.logger import logger
 
 # Local variables
 
-LOGGER = logging.getLogger(__name__)
-LIFECYCLE_SUCCESS_STATUS = 200
+LIFECYCLE_SUCCESS_STATUS = HTTPCodes.HTTP_SUCCESS
 events_router = APIRouter(
     prefix="/v1/maintenance-events",
     tags=["zelle-maintenance-events"],
@@ -105,6 +104,13 @@ async def _run_lifecycle(
     if x_confirm_ticket is None or not x_confirm_ticket.strip():
         raise ValidationFailedError("X-Confirm-Ticket header is required.")
     # endIf
+    logger.info(
+        "lifecycle %s event_id=%s client_id=%s dry_run=%s",
+        action.value,
+        event_id,
+        client_id,
+        dry_run,
+    )
     response = await service.lifecycle(
         event_id,
         action,
@@ -148,6 +154,12 @@ async def schedule_event(
     :rtype: JSONResponse
     """
 
+    logger.info(
+        "schedule request client_id=%s idempotency_key=%s correlation_id=%s",
+        client_id,
+        idempotency_key,
+        correlation_id,
+    )
     result = await service.schedule(
         payload,
         client_id=client_id,
@@ -308,9 +320,14 @@ async def list_events(
     :rtype: JSONResponse
     """
 
+    logger.debug(
+        "list events status=%s client_id=%s",
+        status.value if status is not None else None,
+        client_id,
+    )
     envelope = await service.list_events(status, correlation_id=correlation_id)
     return JSONResponse(
-        status_code=200,
+        status_code=HTTPCodes.HTTP_SUCCESS,
         content=envelope.model_dump(mode="json", by_alias=True),
         headers={"X-Correlation-Id": correlation_id},
     )
@@ -340,9 +357,10 @@ async def get_event(
     :rtype: JSONResponse
     """
 
+    logger.debug("get event event_id=%s client_id=%s", event_id, client_id)
     response = await service.get_event(event_id, correlation_id=correlation_id)
     return JSONResponse(
-        status_code=200,
+        status_code=HTTPCodes.HTTP_SUCCESS,
         content=response.model_dump(mode="json", by_alias=True),
         headers={"X-Correlation-Id": correlation_id},
     )
