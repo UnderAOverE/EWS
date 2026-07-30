@@ -81,19 +81,30 @@ def _build_ssl_context(settings: ZelleSettings) -> ssl.SSLContext | bool:
     """
 
     if not settings.verify_ssl:
+        logger.warning("southbound TLS verification DISABLED (verify_ssl=False) — non-prod only")
         return False
     # endIf
     context = ssl.create_default_context()
     if settings.ca_certificate_path is not None:
+        logger.debug("loading southbound CA bundle: %s", settings.ca_certificate_path)
         context.load_verify_locations(cafile=str(settings.ca_certificate_path))
-    # endIf
+    else:
+        logger.debug("no ca_certificate_path set; using system CA store for southbound TLS")
+    # endIfElse
     if settings.client_certificate_path is not None and settings.client_key_path is not None:
         # mTLS: present the EWS client certificate. The pair is validated together in settings.
+        logger.info(
+            "southbound mTLS enabled: client cert=%s key=%s",
+            settings.client_certificate_path,
+            settings.client_key_path,
+        )
         context.load_cert_chain(
             certfile=str(settings.client_certificate_path),
             keyfile=str(settings.client_key_path),
         )
-    # endIf
+    else:
+        logger.debug("southbound mTLS not configured (no client cert/key)")
+    # endIfElse
     return context
 # endDef
 
@@ -110,6 +121,11 @@ def _build_http_client(settings: ZelleSettings) -> httpx.AsyncClient:
     :rtype: httpx.AsyncClient
     """
 
+    logger.debug(
+        "building southbound httpx.AsyncClient (verify_ssl=%s, mtls=%s)",
+        settings.verify_ssl,
+        settings.client_certificate_path is not None,
+    )
     return httpx.AsyncClient(verify=_build_ssl_context(settings))
 # endDef
 

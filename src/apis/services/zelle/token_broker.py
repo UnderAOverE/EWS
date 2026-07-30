@@ -360,6 +360,11 @@ class TokenBroker:
                 "client_assertion": self._build_assertion(),
                 "scope": self._settings.token_scope,
             }
+            logger.debug(
+                "token exchange POST %s scope=%s (never logs the assertion or token)",
+                self._settings.token_url,
+                self._settings.token_scope,
+            )
             try:
                 async with asyncio.timeout(remaining):
                     response = await self._client.post(
@@ -374,6 +379,7 @@ class TokenBroker:
                 continue
             # endTryExcept
             status = response.status_code
+            logger.debug("token exchange response status=%s", status)
             if status == 200:
                 try:
                     payload: dict[str, Any] = response.json()
