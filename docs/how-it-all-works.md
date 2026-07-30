@@ -81,8 +81,9 @@ sibling modules. The host app builds our service in its lifespan with
 (`get_zelle_settings`) just like their `environment_settings` — and stores it
 on `app.state.zelle_service`. It hands us:
 
-1. Its **MongoDB client** (we use `settings.mongo_database_name` to pick the
-   database for event state, the audit trail, and idempotency records),
+1. Its **MongoDB client** (the repositories select the database + collections
+   from the `DatabasesCollections` constants — the `zelle_*` collections in
+   `fdn-c-amp-fapis-py` — for event state, the audit trail, and idempotency),
 2. Its **`EmailService`** (optional — used by the watchdog for stuck-event
    alerts; we reuse it rather than shipping our own mailer).
 
@@ -368,7 +369,7 @@ can also pass them in directly). The important ones:
 | `ZELLE_CA_CERTIFICATE_PATH` | Private CA bundle to trust EWS (omit → system CAs) — for the zelle-owned mTLS HTTP client |
 | `ZELLE_CLIENT_CERTIFICATE_PATH` / `ZELLE_CLIENT_KEY_PATH` | The EWS **mTLS** client keypair (both or neither — a half-set pair fails startup); crown jewels, mounted read-only |
 | `ZELLE_VERIFY_SSL` | TLS verification (default `true`); set `false` only for non-prod |
-| `ZELLE_MONGO_DATABASE_NAME` | Which database on the host's Mongo client the `zelle_*` collections live in |
+| _(database + collection names)_ | Not env vars — the `zelle_*` collection names and the `fdn-c-amp-fapis-py` database come from the `DatabasesCollections` constants in `common/constants.py` |
 | `ZELLE_ORG_ID`, `ZELLE_PARTICIPANT_NAME`, `ZELLE_SUBMITTED_NAME`, `ZELLE_CONTACT_*` | The org identity + contact block auto-injected into every EWS schedule |
 | `ZELLE_CLIENT_ALLOWLIST` | Which `X-Client-Id`s may call at all (empty = allow any — **dev only**) |
 | `ZELLE_LIFECYCLE_CLIENT_ALLOWLIST` | Which clients may start/complete/cancel (empty = fall back to the general allowlist) |
