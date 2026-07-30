@@ -241,7 +241,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(title="zelle-local", lifespan=lifespan)
 app.include_router(zelle_events_router)
 app.include_router(zelle_admin_router)
-add_zelle_exception_handlers(app)
+# Standalone zelle test app: opt into the global validation handler so bad bodies also return
+# the zelle 422 envelope. In the host app this is a decision (see production-deployment.md).
+add_zelle_exception_handlers(app, include_validation_handler=True)
 ```
 
 Run it (with the Step 5 env vars exported, the fake EWS from Step 6 running, and

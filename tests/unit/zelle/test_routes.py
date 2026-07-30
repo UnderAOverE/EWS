@@ -108,7 +108,9 @@ async def _wire_app(
     app = FastAPI()
     app.include_router(zelle_events_router)
     app.include_router(zelle_admin_router)
-    add_zelle_exception_handlers(app)
+    # Opt into the app-global validation handler so test_body_validation_is_422_envelope
+    # exercises the zelle 422 envelope; the host chooses whether to enable it in production.
+    add_zelle_exception_handlers(app, include_validation_handler=True)
     service = await ZelleService.get_service(
         mongo_client=mongo_client,
         settings=settings,

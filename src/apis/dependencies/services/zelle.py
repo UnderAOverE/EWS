@@ -63,15 +63,27 @@ CORRELATION_ID_PREFIX = "c-"
 # ----------------------------------------------------------------------------------------------------#
 
 
-def add_zelle_exception_handlers(app: FastAPI) -> None:
+def add_zelle_exception_handlers(
+    app: FastAPI,
+    include_validation_handler: bool = False,
+    ) -> None:
 
     """
-    Register the zelle exception handlers on the host application — call once at app setup, the way
-    the host registers its other handlers. Maps ``ZelleFacadeError`` subclasses to the consumer
-    error envelope and overrides FastAPI request-validation errors.
+    Register the zelle exception handlers on the host application — call once at app setup, next to
+    the host's other ``add_exception_handler`` calls.
+
+    The ``ZelleFacadeError`` handler is always registered: it only ever fires for zelle's own error
+    types, so it is safe alongside the host's handlers (e.g. its BaseAPIException handler). The
+    ``RequestValidationError`` handler is **app-global** — it overrides validation-error responses
+    for EVERY route (ose/saas/zelle alike), so it is opt-in to avoid clobbering the host's own
+    validation convention. Enable it only to make the zelle envelope the app-wide validation shape.
 
     :param app: The host FastAPI application.
     :type app: FastAPI
+    :param include_validation_handler: When True, also override the app-global
+        ``RequestValidationError`` response with the zelle envelope. Default False leaves the
+        host's convention untouched; zelle body-validation errors then use the host/FastAPI shape.
+    :type include_validation_handler: bool
     :return: None.
     :rtype: None
     """
@@ -79,10 +91,13 @@ def add_zelle_exception_handlers(app: FastAPI) -> None:
     # Starlette types handlers as taking bare Exception; the registration key guarantees the
     # narrower exception type at runtime, so the ignores are safe.
     app.add_exception_handler(ZelleFacadeError, zelle_exception_handler)  # type: ignore[arg-type]
-    app.add_exception_handler(
-        RequestValidationError,
-        validation_exception_handler,  # type: ignore[arg-type]
-    )
+    if include_validation_handler:
+        # App-global: overrides validation-error responses for every route, so opt-in only.
+        app.add_exception_handler(
+            RequestValidationError,
+            validation_exception_handler,  # type: ignore[arg-type]
+        )
+    # endIf
 # endDef
 
 

@@ -125,8 +125,15 @@ from src.apis.routes import zelle_events_router, zelle_admin_router
 from src.apis.dependencies.services.zelle import add_zelle_exception_handlers
 app.include_router(zelle_events_router)
 app.include_router(zelle_admin_router)
-add_zelle_exception_handlers(app)
+add_zelle_exception_handlers(app)   # facade-error handler only — safe beside the host's handlers
 ```
+
+> `add_zelle_exception_handlers` always registers the `ZelleFacadeError` handler (zelle-specific,
+> no clash with the host's `BaseAPIException` / 404 handlers). Its request-validation handler is
+> **app-global** — it would override validation-error responses for *every* route, so it is opt-in:
+> pass `include_validation_handler=True` only if you want zelle's 422 envelope to become the
+> app-wide validation shape. Left off (the default), zelle body-validation errors use the host's
+> existing validation convention.
 
 ```python
 # initializer.py lifespan — in the try block, after mongo_client + email_service exist
