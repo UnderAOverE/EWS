@@ -130,10 +130,6 @@ class ZelleSettings(BaseSettings):
     # EmailService.send_alert(only_production=...); True keeps stuck-event emails production-only,
     # matching the host convention.
     alert_only_in_production: bool = True
-    # Mongo. mongo_database_name selects the database on the host's injected Motor client;
-    # collections are prefixed with mongo_collection_prefix within it.
-    mongo_database_name: str
-    mongo_collection_prefix: str = "zelle"
 
     @model_validator(mode="before")
     @classmethod

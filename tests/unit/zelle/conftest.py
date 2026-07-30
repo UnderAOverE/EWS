@@ -99,7 +99,6 @@ def settings(signing_key_path: Path) -> ZelleSettings:
         contact_name="Terry Technology",
         contact_phone="9999999977",
         contact_email="TTechnology@BBO.com",
-        mongo_database_name="zelle_tests",
     )
 # endDef
 
@@ -115,24 +114,6 @@ def mongo_client() -> AsyncMongoMockClient:
     """
 
     return AsyncMongoMockClient()
-# endDef
-
-
-@pytest.fixture
-def database(mongo_client: AsyncMongoMockClient) -> AsyncMongoMockClient:
-
-    """
-    The zelle test database on the mock client — the same database (name) ZelleService.get_service
-    resolves via ``settings.mongo_database_name``, so repository-level and service-level tests share
-    state.
-
-    :param mongo_client: The mock client fixture.
-    :type mongo_client: AsyncMongoMockClient
-    :return: The mock database.
-    :rtype: AsyncMongoMockClient
-    """
-
-    return mongo_client["zelle_tests"]
 # endDef
 
 

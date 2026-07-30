@@ -47,10 +47,13 @@ from motor.motor_asyncio import AsyncIOMotorClient
 # Internal imports
 
 from src.apis.config.zelle import ZelleSettings, get_zelle_settings
-from src.apis.repositories.zelle.audit import AuditRepository
-from src.apis.repositories.zelle.events import EventsRepository
-from src.apis.repositories.zelle.idempotency import IdempotencyRepository
-from src.apis.repositories.zelle.leases import LeaseRepository
+from src.apis.repositories.zelle.audit import AuditRepository, get_audit_repository
+from src.apis.repositories.zelle.events import EventsRepository, get_events_repository
+from src.apis.repositories.zelle.idempotency import (
+    IdempotencyRepository,
+    get_idempotency_repository,
+)
+from src.apis.repositories.zelle.leases import LeaseRepository, get_leases_repository
 from src.apis.services.zelle.event_service import EventService
 from src.apis.services.zelle.token_broker import TokenBroker
 from src.apis.services.zelle.watchdog import AlertSender, Watchdog
@@ -209,18 +212,16 @@ class ZelleService:
         if settings is None:
             settings = get_zelle_settings()
         # endIf
-        database = mongo_client[settings.mongo_database_name]
         owns_http_client = http_client is None
         if http_client is None:
             http_client = _build_http_client(settings)
         # endIf
-        prefix = settings.mongo_collection_prefix
         broker = TokenBroker(settings, http_client)
         zoms_client = ZomsClient(settings, http_client, broker)
-        events = EventsRepository(database, prefix)
-        idempotency = IdempotencyRepository(database, prefix)
-        audit = AuditRepository(database, prefix)
-        leases = LeaseRepository(database, prefix)
+        events = await get_events_repository(mongo_client)
+        idempotency = await get_idempotency_repository(mongo_client)
+        audit = await get_audit_repository(mongo_client)
+        leases = await get_leases_repository(mongo_client)
         event_service = EventService(settings, events, idempotency, audit, zoms_client)
         watchdog = (
             Watchdog(settings, events, leases, email_service)

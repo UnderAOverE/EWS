@@ -10,12 +10,13 @@
 # Version       : 1.0.0.                                                                              #
 # Author        : Shane Reddy.                                                                        #
 #                                                                                                     #
-# Explanation   : IdempotencyRepository — the schedule replay ledger. A unique compound index on      #
-#                 (client_id, key) makes a concurrent duplicate lose deterministically at             #
-#                 try_insert; stored response snapshots are replayed for duplicate submissions,       #
-#                 and cleanly-failed rows can be reclaimed for a safe re-drive.                       #
-# Dependencies  : motor, pymongo, apis.models.zelle.records.                                          #
-# Modifications : 2026-07-18 Shane Reddy — Initial version.                                           #
+# Explanation   : IdempotencyRepository — the schedule replay ledger on the base read/write motor      #
+#                 repositories. A unique compound index on (client_id, key) makes a concurrent          #
+#                 duplicate lose deterministically at try_insert (base raises DuplicateKeyError);        #
+#                 stored response snapshots are replayed, and cleanly-failed rows are reclaimed.        #
+# Dependencies  : motor, pymongo, common.db.motor_repository, common.db.exceptions,                    #
+#                 apis.models.zelle.records, common.constants, common.logger.                          #
+# Modifications : 2026-07-18 Shane Reddy — Initial version.                                            #
 #                                                                                                     #
 # Contact       : shanevreddy@gmail.com.                                                              #
 #                                                                                                     #
@@ -34,21 +35,26 @@ sys.dont_write_bytecode = True
 
 # External imports
 
-import logging
-from datetime import datetime, timezone
 from typing import Any
 
-from motor.motor_asyncio import AsyncIOMotorDatabase
-from pymongo import ASCENDING
-from pymongo.errors import DuplicateKeyError
+from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo import ASCENDING, ReturnDocument
+from pymongo.collation import Collation
 
 # Internal imports
 
 from src.apis.models.zelle.records import IdempotencyRecord
+from src.common.constants import DatabasesCollections
+from src.common.db.exceptions import DuplicateKeyError
+from src.common.db.motor_repository import (
+    BaseReadMotorRepository,
+    BaseWriteMotorRepository,
+    MongoDocument,
+)
+from src.common.logger import logger
 
 # Local variables
 
-LOGGER = logging.getLogger(__name__)
 STATUS_PENDING = "pending"
 STATUS_SUCCEEDED = "succeeded"
 STATUS_FAILED = "failed"
@@ -59,32 +65,19 @@ STATUS_FAILED = "failed"
 # ----------------------------------------------------------------------------------------------------#
 
 
-class IdempotencyRepository:
+class IdempotencyRepository(
+    BaseReadMotorRepository[IdempotencyRecord],
+    BaseWriteMotorRepository[IdempotencyRecord],
+    ):
 
     """
-    Mongo ledger closing the schedule idempotency race. The unique ``(client_id, key)`` index
-    is the load-bearing guarantee: whichever request inserts first wins; the loser re-reads and
-    replays (or 409s). Rows carry the canonical body hash and, on success, the stored northbound
-    response snapshot for replay.
+    Mongo ledger closing the schedule idempotency race. The unique ``(client_id, key)`` index is the
+    load-bearing guarantee: whichever request inserts first wins; the loser re-reads and replays (or
+    409s).
     """
 
-    def __init__(
-        self,
-        database: AsyncIOMotorDatabase[dict[str, Any]],
-        collection_prefix: str,
-        ) -> None:
-
-        """
-        Bind the repository to its collection.
-
-        :param database: The host application's Motor database, injected.
-        :type database: AsyncIOMotorDatabase[dict[str, Any]]
-        :param collection_prefix: Collection name prefix (collection ``{prefix}_idempotency``).
-        :type collection_prefix: str
-        """
-
-        self._collection = database[f"{collection_prefix}_idempotency"]
-    # endDef
+    _database_name = DatabasesCollections.APPLICATION_MAIN_DATABASE
+    _collection_name = DatabasesCollections.ZELLE_IDEMPOTENCY_COLLECTION
 
     async def ensure_indexes(self) -> None:
 
@@ -95,10 +88,121 @@ class IdempotencyRepository:
         :rtype: None
         """
 
+        logger.debug("ensuring unique (client_id, key) index on %s", self._collection_name)
         await self._collection.create_index(
             [("client_id", ASCENDING), ("key", ASCENDING)],
             unique=True,
         )
+    # endDef
+
+    async def find_one(
+        self,
+        filter_query: MongoDocument,
+        projection: MongoDocument | None = None,
+        sort_options: list[tuple[str, int]] | None = None,
+        collation: Collation | None = None,
+        ) -> IdempotencyRecord | None:
+
+        """
+        Find a single ledger document and map it to an IdempotencyRecord.
+
+        :param filter_query: The filter query to apply.
+        :type filter_query: MongoDocument
+        :param projection: Optional projection to apply.
+        :type projection: MongoDocument | None
+        :param sort_options: Optional sorting options.
+        :type sort_options: list[tuple[str, int]] | None
+        :param collation: Optional collation to apply.
+        :type collation: Collation | None
+        :return: The ledger record, or None when absent.
+        :rtype: IdempotencyRecord | None
+        """
+
+        doc = await self._execute_find_one(filter_query, projection, sort_options, collation)
+        return self._read_map_to_model(doc) if doc is not None else None
+    # endDef
+
+    async def create(self, entity: IdempotencyRecord) -> IdempotencyRecord:
+
+        """
+        Insert a ledger row.
+
+        :param entity: The ledger record to persist.
+        :type entity: IdempotencyRecord
+        :return: The persisted ledger record.
+        :rtype: IdempotencyRecord
+        """
+
+        await self._execute_insert_one(self._write_map_to_document(entity))
+        return entity
+    # endDef
+
+    async def create_many(self, entities: list[IdempotencyRecord]) -> list[IdempotencyRecord]:
+
+        """
+        Insert multiple ledger rows.
+
+        :param entities: The ledger records to persist.
+        :type entities: list[IdempotencyRecord]
+        :return: The persisted ledger records.
+        :rtype: list[IdempotencyRecord]
+        """
+
+        await self._execute_insert_many([self._write_map_to_document(e) for e in entities])
+        return entities
+    # endDef
+
+    async def update_one(
+        self,
+        filter_query: MongoDocument,
+        update_doc_payload: MongoDocument,
+        upsert: bool = False,
+        ) -> IdempotencyRecord | None:
+
+        """
+        Apply an update and return the updated ledger record.
+
+        :param filter_query: The filter query to match the document.
+        :type filter_query: MongoDocument
+        :param update_doc_payload: The update document payload.
+        :type update_doc_payload: MongoDocument
+        :param upsert: When True, insert if no document matches.
+        :type upsert: bool
+        :return: The updated ledger record, or None when nothing matched.
+        :rtype: IdempotencyRecord | None
+        """
+
+        doc = await self._collection.find_one_and_update(
+            filter_query,
+            update_doc_payload,
+            upsert=upsert,
+            return_document=ReturnDocument.AFTER,
+        )
+        return self._read_map_to_model(doc) if doc is not None else None
+    # endDef
+
+    async def update_many(
+        self,
+        filter_query: MongoDocument,
+        update_doc_payload: MongoDocument,
+        upsert: bool = False,
+        ) -> int:
+
+        """
+        Apply an update to many ledger rows.
+
+        :param filter_query: The filter query to match documents.
+        :type filter_query: MongoDocument
+        :param update_doc_payload: The update document payload.
+        :type update_doc_payload: MongoDocument
+        :param upsert: When True, insert if no document matches.
+        :type upsert: bool
+        :return: The number of documents modified.
+        :rtype: int
+        """
+
+        result = await self._collection.update_many(filter_query, update_doc_payload, upsert=upsert)
+        return result.modified_count
     # endDef
 
     async def try_insert(self, record: IdempotencyRecord) -> bool:
@@ -113,8 +217,13 @@ class IdempotencyRepository:
         """
 
         try:
-            await self._collection.insert_one(record.model_dump(mode="python"))
+            await self._execute_insert_one(self._write_map_to_document(record))
         except DuplicateKeyError:
+            logger.debug(
+                "idempotency key already in flight: client_id=%s key=%s",
+                record.client_id,
+                record.key,
+            )
             return False
         # endTryExcept
         return True
@@ -137,11 +246,7 @@ class IdempotencyRepository:
         :rtype: IdempotencyRecord | None
         """
 
-        document = await self._collection.find_one({"client_id": client_id, "key": key})
-        if document is None:
-            return None
-        # endIf
-        return self._from_document(document)
+        return await self.find_one({"client_id": client_id, "key": key})
     # endDef
 
     async def mark_succeeded(
@@ -196,6 +301,7 @@ class IdempotencyRepository:
         :rtype: None
         """
 
+        logger.warning("marking idempotency row failed: client_id=%s key=%s", client_id, key)
         await self._collection.update_one(
             {"client_id": client_id, "key": key},
             {"$set": {"status": STATUS_FAILED}},
@@ -220,34 +326,30 @@ class IdempotencyRepository:
         :rtype: bool
         """
 
-        document = await self._collection.find_one_and_update(
+        doc = await self._collection.find_one_and_update(
             {"client_id": client_id, "key": key, "status": STATUS_FAILED},
             {"$set": {"status": STATUS_PENDING}},
         )
-        return document is not None
-    # endDef
-
-    def _from_document(self, document: dict[str, Any]) -> IdempotencyRecord:
-
-        """
-        Convert a Mongo document back to a ledger record, coercing the naive ``created_at``
-        (Motor's default) to tz-aware UTC.
-
-        :param document: The Mongo document.
-        :type document: dict[str, Any]
-        :return: The ledger record.
-        :rtype: IdempotencyRecord
-        """
-
-        data = dict(document)
-        data.pop("_id", None)
-        created_at = data.get("created_at")
-        if isinstance(created_at, datetime) and created_at.tzinfo is None:
-            data["created_at"] = created_at.replace(tzinfo=timezone.utc)
-        # endIf
-        return IdempotencyRecord.model_validate(data)
+        return doc is not None
     # endDef
 # endClass
+
+
+async def get_idempotency_repository(
+    db_client: AsyncIOMotorClient[MongoDocument],
+    ) -> IdempotencyRepository:
+
+    """
+    Dependency function to get an instance of IdempotencyRepository.
+
+    :param db_client: The MongoDB client instance.
+    :type db_client: AsyncIOMotorClient
+    :return: An instance of IdempotencyRepository.
+    :rtype: IdempotencyRepository
+    """
+
+    return IdempotencyRepository(db_client, IdempotencyRecord)
+# endDef
 
 
 # end_apis/repositories/zelle/idempotency.py

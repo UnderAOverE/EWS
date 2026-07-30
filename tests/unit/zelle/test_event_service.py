@@ -56,9 +56,9 @@ from src.apis.models.zelle.errors import (
 )
 from src.apis.models.zelle.northbound import ResolveRequest, ScheduleEventRequest
 from src.apis.models.zelle.southbound import EwsScheduleRequest, EwsScheduleResponse
-from src.apis.repositories.zelle.audit import AuditRepository
-from src.apis.repositories.zelle.events import EventsRepository
-from src.apis.repositories.zelle.idempotency import IdempotencyRepository
+from src.apis.repositories.zelle.audit import get_audit_repository
+from src.apis.repositories.zelle.events import get_events_repository
+from src.apis.repositories.zelle.idempotency import get_idempotency_repository
 from src.apis.services.zelle.event_service import EventService
 
 # Local variables
@@ -155,16 +155,16 @@ class _StubZoms:
 @pytest.fixture
 async def harness(
     settings: ZelleSettings,
-    database: AsyncMongoMockClient,
+    mongo_client: AsyncMongoMockClient,
     ) -> SimpleNamespace:
 
     """
     Real repositories over mongomock, a stub ZOMS client, and the service under test.
     """
 
-    events = EventsRepository(database, settings.mongo_collection_prefix)
-    idempotency = IdempotencyRepository(database, settings.mongo_collection_prefix)
-    audit = AuditRepository(database, settings.mongo_collection_prefix)
+    events = await get_events_repository(mongo_client)
+    idempotency = await get_idempotency_repository(mongo_client)
+    audit = await get_audit_repository(mongo_client)
     await events.ensure_indexes()
     await idempotency.ensure_indexes()
     await audit.ensure_indexes()
@@ -176,7 +176,6 @@ async def harness(
         idempotency=idempotency,
         audit=audit,
         zoms=zoms,
-        database=database,
         settings=settings,
     )
 # endDef
@@ -224,7 +223,7 @@ async def test_schedule_happy_path(harness: SimpleNamespace) -> None:
     assert stored is not None
     assert stored.ews_event_id == EWS_EVENT_ID
     assert stored.last_confirmed_upstream_at is not None
-    audit_count = await harness.database["zelle_audit"].count_documents({})
+    audit_count = await harness.audit._collection.count_documents({})
     assert audit_count == 2
 # endDef
 
@@ -721,7 +720,7 @@ async def test_startup_sweep(harness: SimpleNamespace) -> None:
 async def test_allowlists(
     signing_key_path: object,
     settings: ZelleSettings,
-    database: AsyncMongoMockClient,
+    mongo_client: AsyncMongoMockClient,
     ) -> None:
 
     """
@@ -735,9 +734,9 @@ async def test_allowlists(
             "lifecycle_client_allowlist": ["noc-only"],
         },
     )
-    events = EventsRepository(database, restricted.mongo_collection_prefix)
-    idempotency = IdempotencyRepository(database, restricted.mongo_collection_prefix)
-    audit = AuditRepository(database, restricted.mongo_collection_prefix)
+    events = await get_events_repository(mongo_client)
+    idempotency = await get_idempotency_repository(mongo_client)
+    audit = await get_audit_repository(mongo_client)
     zoms = _StubZoms()
     service = EventService(restricted, events, idempotency, audit, zoms)  # type: ignore[arg-type]
     with pytest.raises(ForbiddenActionError):

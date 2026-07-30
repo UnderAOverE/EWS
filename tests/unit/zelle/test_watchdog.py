@@ -44,8 +44,8 @@ from mongomock_motor import AsyncMongoMockClient
 from src.apis.config.zelle import ZelleSettings
 from src.apis.models.zelle.enums import EventStatus, HoldMode
 from src.apis.models.zelle.records import EventRecord
-from src.apis.repositories.zelle.events import EventsRepository
-from src.apis.repositories.zelle.leases import LeaseRepository
+from src.apis.repositories.zelle.events import get_events_repository
+from src.apis.repositories.zelle.leases import get_leases_repository
 from src.apis.services.zelle.watchdog import Watchdog
 
 # Local variables
@@ -133,7 +133,7 @@ def _stuck_in_progress_record(now: datetime) -> EventRecord:
 
 async def test_scan_once_emails_stuck_event(
     settings: ZelleSettings,
-    database: AsyncMongoMockClient,
+    mongo_client: AsyncMongoMockClient,
     ) -> None:
 
     """
@@ -142,15 +142,14 @@ async def test_scan_once_emails_stuck_event(
 
     :param settings: The fake-environment settings fixture.
     :type settings: ZelleSettings
-    :param database: The mongomock database fixture.
-    :type database: AsyncMongoMockClient
+    :param mongo_client: The mongomock client fixture.
+    :type mongo_client: AsyncMongoMockClient
     :return: None.
     :rtype: None
     """
 
-    prefix = settings.mongo_collection_prefix
-    events = EventsRepository(database, prefix)
-    leases = LeaseRepository(database, prefix)
+    events = await get_events_repository(mongo_client)
+    leases = await get_leases_repository(mongo_client)
     now = datetime.now(timezone.utc)
     await events.create(_stuck_in_progress_record(now))
     alerter = _RecordingAlerter()
@@ -168,7 +167,7 @@ async def test_scan_once_emails_stuck_event(
 
 async def test_scan_once_without_alerter_still_detects(
     settings: ZelleSettings,
-    database: AsyncMongoMockClient,
+    mongo_client: AsyncMongoMockClient,
     ) -> None:
 
     """
@@ -177,15 +176,14 @@ async def test_scan_once_without_alerter_still_detects(
 
     :param settings: The fake-environment settings fixture.
     :type settings: ZelleSettings
-    :param database: The mongomock database fixture.
-    :type database: AsyncMongoMockClient
+    :param mongo_client: The mongomock client fixture.
+    :type mongo_client: AsyncMongoMockClient
     :return: None.
     :rtype: None
     """
 
-    prefix = settings.mongo_collection_prefix
-    events = EventsRepository(database, prefix)
-    leases = LeaseRepository(database, prefix)
+    events = await get_events_repository(mongo_client)
+    leases = await get_leases_repository(mongo_client)
     now = datetime.now(timezone.utc)
     await events.create(_stuck_in_progress_record(now))
     watchdog = Watchdog(settings, events, leases, None)
