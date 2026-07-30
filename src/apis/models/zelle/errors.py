@@ -33,7 +33,6 @@ sys.dont_write_bytecode = True
 
 # External imports
 
-import logging
 import math
 
 from fastapi import Request
@@ -45,10 +44,11 @@ from pydantic.alias_generators import to_camel
 # Internal imports
 
 from src.apis.models.zelle.enums import ErrorCode
+from src.common.constants import HTTPCodes
+from src.common.logger import logger
 
 # Local variables
 
-LOGGER = logging.getLogger(__name__)
 DEFAULT_CORRELATION_ID = "unknown"
 
 
@@ -268,7 +268,13 @@ def zelle_exception_handler(request: Request, exc: ZelleFacadeError) -> JSONResp
         headers["Retry-After"] = str(math.ceil(exc.retry_after_seconds))
     # endIf
     # Log metadata only — messages are facade-authored, but bodies/tokens/PII never reach here.
-    LOGGER.info(
+    # 5xx (EWS/upstream problems) log at WARNING so they stand out; consumer 4xx stay at INFO.
+    log = (
+        logger.warning
+        if exc.status_code >= HTTPCodes.HTTP_INTERNAL_SERVER_ERROR
+        else logger.info
+    )
+    log(
         "zelle facade error code=%s status=%s correlation_id=%s retryable=%s",
         exc.code,
         exc.status_code,
@@ -307,6 +313,11 @@ def validation_exception_handler(
         f"{'.'.join(str(part) for part in error.get('loc', ()))}: {error.get('msg', 'invalid')}"
         for error in exc.errors()
     )
+    logger.info(
+        "zelle request validation failed correlation_id=%s: %s",
+        correlation_id,
+        details,
+    )
     envelope = ErrorEnvelope(
         error=ErrorDetail(
             code=ErrorCode.VALIDATION_FAILED,
@@ -316,7 +327,7 @@ def validation_exception_handler(
         ),
     )
     return JSONResponse(
-        status_code=422,
+        status_code=HTTPCodes.HTTP_UNPROCESSABLE_ENTITY,
         content=envelope.model_dump(mode="json", by_alias=True),
         headers={"X-Correlation-Id": correlation_id},
     )
