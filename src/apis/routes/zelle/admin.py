@@ -56,13 +56,45 @@ admin_router = APIRouter(
     tags=["zelle-admin"],
 )
 
+# OpenAPI/ReDoc description (operator-facing markdown); see the note in routes/zelle/events.py.
+
+_RESOLVE_DESCRIPTION = """
+**Operator-only.** Manually resolve an event that the facade has locked in `UNCERTAIN` (an
+ambiguous EWS outcome) or `PENDING_UPSTREAM_ID` (EWS did not return its event id synchronously),
+**after** you have reconciled the true state with EWS out of band. This is the exit from the
+state-machine lock, so the lock can never become the outage.
+
+**Headers**
+- `X-Client-Id` **(required)** — the operator's identity; recorded in the audit trail.
+- `X-Correlation-Id` *(optional)* — trace id; minted if omitted.
+
+**Path**
+- `event_id` — the facade `eventId` to resolve.
+
+**Body**
+- `actualStatus` **(required)** — the true status you are attesting (a legal target for the event's
+  current status).
+- `attestation` **(required)** — free-text operator justification (e.g. "EWS NOC ref 4471"); stored
+  in the audit trail.
+- `ewsEventId` *(required only for `PENDING_UPSTREAM_ID`)* — the EWS maintenance event id you
+  obtained from EWS, so later lifecycle calls have an id to use.
+
+**Responses**: `200` with the resolved event view · `404` unknown event · `409` when the event is
+not resolvable or the target status is not a legal edge.
+"""
+
 
 # ----------------------------------------------------------------------------------------------------#
 # Classes or functions.                                                                               #
 # ----------------------------------------------------------------------------------------------------#
 
 
-@admin_router.post("/{event_id}/resolve")
+@admin_router.post(
+    "/{event_id}/resolve",
+    summary="Operator: resolve an UNCERTAIN / PENDING_UPSTREAM_ID event",
+    response_description="The consumer view of the resolved event.",
+    description=_RESOLVE_DESCRIPTION,
+)
 async def resolve_event(
     event_id: str,
     payload: ResolveRequest,

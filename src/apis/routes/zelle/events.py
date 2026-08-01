@@ -61,6 +61,105 @@ events_router = APIRouter(
     tags=["zelle-maintenance-events"],
 )
 
+# OpenAPI/ReDoc descriptions (consumer-facing markdown). These are deliberately separate from the
+# reST docstrings, which document the code for developers; these document the HTTP contract for
+# callers and render as rich markdown in ReDoc.
+
+_SCHEDULE_DESCRIPTION = """
+Schedule (create) a maintenance window. The facade validates the window, runs its guardrails
+(overlap, allowlist), enriches the request with **your organisation's constants and contact block
+from config**, and calls EWS exactly once.
+
+**Idempotency** — send an `Idempotency-Key` header to make retries safe. A replay with the same key
+**and** the same body returns the original result instead of booking a second window.
+
+**Headers**
+- `X-Client-Id` **(required)** — your caller identity; used for attribution and the allowlist.
+- `Idempotency-Key` *(optional)* — safe-replay key for this schedule.
+- `X-Correlation-Id` *(optional)* — request trace id; the facade mints `c-<uuid4>` if you omit it.
+
+**Body** — you send only what a change ticket knows: `startTime`, `endTime`, `ticketNumber`,
+`reason`, and optionally `holdMode` / `allowOverlap` / `suppressDuplicatePayments` /
+`networkNotificationId`. You do **not** send your org id, participant/submitted names, or the
+contact block — the facade injects those.
+
+**Responses**
+- `201` — scheduled; the body carries the facade `eventId` you use for every later call.
+- `202` — accepted, but the upstream id is still pending (rare; awaits an operator resolve).
+- `422` — request validation failed (inverted window, past start, missing field).
+- `409` / `403` / `502` / `503` — see the standard error envelope.
+"""
+
+_LIFECYCLE_DESCRIPTION = """
+{intro}
+
+This drives a real EWS call and moves the event through the facade state machine.
+
+**Guardrails**
+- `X-Confirm-Ticket` **(required)** must exactly equal the event's `ticketNumber` — a typed
+  "are you sure" confirmation. A mismatch is rejected with `409`.
+- The event must currently be **{precondition}**; any other state is a `409`.
+
+**Headers**
+- `X-Client-Id` **(required)** — caller identity (allowlist-checked).
+- `X-Confirm-Ticket` **(required)** — see above.
+- `X-Correlation-Id` *(optional)* — trace id; minted if omitted.
+
+**Query**
+- `dry_run` *(default `false`)* — audit the attempt **without** calling EWS or changing state; use
+  it to pre-flight a call safely.
+
+**Path**
+- `event_id` — the facade `eventId` returned by schedule.
+
+**Responses**: `200` success · `409` state/ticket conflict · `404` unknown event ·
+`502` / `503` upstream problem.
+"""
+
+_START_DESCRIPTION = _LIFECYCLE_DESCRIPTION.format(
+    intro="**Start** a scheduled maintenance window — this begins the EWS message holds on live "
+    "Zelle payment traffic.",
+    precondition="SCHEDULED",
+)
+_COMPLETE_DESCRIPTION = _LIFECYCLE_DESCRIPTION.format(
+    intro="**Complete** an in-progress maintenance window — this releases the EWS holds and lets "
+    "payment traffic flow again.",
+    precondition="IN_PROGRESS",
+)
+_CANCEL_DESCRIPTION = _LIFECYCLE_DESCRIPTION.format(
+    intro="**Cancel** a scheduled maintenance window that has not started yet.",
+    precondition="SCHEDULED",
+)
+
+_LIST_DESCRIPTION = """
+List maintenance events **from the facade's local MongoDB state** — this read does **not** call
+EWS. Optionally filter by `status` (e.g. `SCHEDULED`, `IN_PROGRESS`, `COMPLETE`).
+
+**Headers**
+- `X-Client-Id` **(required)** — caller identity.
+- `X-Correlation-Id` *(optional)* — trace id; minted if omitted.
+
+**Query**
+- `status` *(optional)* — return only events in this status; omit for all.
+
+**Response**: `200` with an envelope of consumer event views (the facade's last known intent).
+"""
+
+_GET_DESCRIPTION = """
+Read one maintenance event **from the facade's local MongoDB state** by its facade `eventId` — this
+read does **not** call EWS. The returned view is the facade's last known intent, not live upstream
+authority.
+
+**Headers**
+- `X-Client-Id` **(required)** — caller identity.
+- `X-Correlation-Id` *(optional)* — trace id; minted if omitted.
+
+**Path**
+- `event_id` — the facade `eventId` returned by schedule.
+
+**Responses**: `200` with the consumer event view · `404` when no such event exists locally.
+"""
+
 
 # ----------------------------------------------------------------------------------------------------#
 # Classes or functions.                                                                               #
@@ -127,7 +226,13 @@ async def _run_lifecycle(
 # endDef
 
 
-@events_router.post("")
+@events_router.post(
+    "",
+    status_code=HTTPCodes.HTTP_CREATED,
+    summary="Schedule a maintenance window",
+    response_description="The consumer event view (camelCase), including the facade eventId.",
+    description=_SCHEDULE_DESCRIPTION,
+)
 async def schedule_event(
     payload: ScheduleEventRequest,
     correlation_id: ZelleCorrelationIdDependency,
@@ -174,7 +279,12 @@ async def schedule_event(
 # endDef
 
 
-@events_router.post("/{event_id}/start")
+@events_router.post(
+    "/{event_id}/start",
+    summary="Start a scheduled event (begins EWS holds)",
+    response_description="The consumer event view after the start transition.",
+    description=_START_DESCRIPTION,
+)
 async def start_event(
     event_id: str,
     correlation_id: ZelleCorrelationIdDependency,
@@ -215,7 +325,12 @@ async def start_event(
 # endDef
 
 
-@events_router.post("/{event_id}/complete")
+@events_router.post(
+    "/{event_id}/complete",
+    summary="Complete an in-progress event (releases EWS holds)",
+    response_description="The consumer event view after the complete transition.",
+    description=_COMPLETE_DESCRIPTION,
+)
 async def complete_event(
     event_id: str,
     correlation_id: ZelleCorrelationIdDependency,
@@ -256,7 +371,12 @@ async def complete_event(
 # endDef
 
 
-@events_router.post("/{event_id}/cancel")
+@events_router.post(
+    "/{event_id}/cancel",
+    summary="Cancel a scheduled event (before it starts)",
+    response_description="The consumer event view after the cancel transition.",
+    description=_CANCEL_DESCRIPTION,
+)
 async def cancel_event(
     event_id: str,
     correlation_id: ZelleCorrelationIdDependency,
@@ -297,7 +417,12 @@ async def cancel_event(
 # endDef
 
 
-@events_router.get("")
+@events_router.get(
+    "",
+    summary="List events (local state, no EWS call)",
+    response_description="An envelope of consumer event views.",
+    description=_LIST_DESCRIPTION,
+)
 async def list_events(
     correlation_id: ZelleCorrelationIdDependency,
     client_id: ZelleClientIdDependency,
@@ -334,7 +459,12 @@ async def list_events(
 # endDef
 
 
-@events_router.get("/{event_id}")
+@events_router.get(
+    "/{event_id}",
+    summary="Get one event (local state, no EWS call)",
+    response_description="The consumer event view.",
+    description=_GET_DESCRIPTION,
+)
 async def get_event(
     event_id: str,
     correlation_id: ZelleCorrelationIdDependency,
