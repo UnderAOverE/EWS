@@ -293,6 +293,31 @@ The fake's fault switch is the `x-fake-fault` header (`500`, `429`, `401`,
 
 ---
 
+## Step 8 — EWS connectivity smoke test (CAT credentials in hand)
+
+When you have a real `maintenanceEventId` from EWS and want a **straight-through
+connectivity check** — token signing, OAuth exchange, TLS/mTLS, routing, and the
+status read — with **no Mongo, no routes, and no local event record**:
+
+```bash
+# same ZELLE_* env as Step 5 (pointed at CAT, real key/kid), venv active
+python -m src.tools.ews_status_smoke <maintenanceEventId>
+```
+
+Exit codes tell you exactly how far it got:
+
+| Exit | Meaning |
+|---|---|
+| `0` | EWS answered 2xx — everything works, including the id. |
+| `2` | EWS answered a definite 4xx — **connectivity and auth are PROVEN**; only the id (or the §3.5 path form, slash vs dot) is in question. |
+| `1` | Failed before a definite answer — unreachable, rate limited, or credentials rejected; the log line says which. |
+
+Note exit `2` is a *successful* connectivity test: EWS received our signed,
+authenticated request and answered it. It works against the fake EWS too
+(env per Step 5).
+
+---
+
 ## Troubleshooting
 
 | Symptom | Likely cause |

@@ -64,6 +64,8 @@ src/apis/dependencies/__init__.py             (slice E)
 src/apis/dependencies/zelle.py                (slice E)  ZelleRuntime, register_zelle
 src/fake_ews/__init__.py                      (slice F)
 src/fake_ews/app.py                           (slice F)  create_fake_ews_app
+src/tools/__init__.py                         (slice F)
+src/tools/ews_status_smoke.py                 (slice F)  connectivity smoke CLI
 requirements.txt                              (slice F)
 pytest.ini                                    (slice F)
 ```
