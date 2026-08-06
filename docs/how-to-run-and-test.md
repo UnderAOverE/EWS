@@ -328,6 +328,7 @@ authenticated request and answered it. It works against the fake EWS too
 | `403 FORBIDDEN_ACTION` | `ZELLE_CLIENT_ALLOWLIST` is set and your `X-Client-Id` isn't in it (leave it unset locally). |
 | Validation `422` on schedule | Body shape wrong — `startTime` must be tz-aware (`…Z`), `endTime > startTime`, not in the past. |
 | Pydantic "Field required" at settings load | A required `ZELLE_*` var is missing (token_aud, client_id, signing_kid, signing_key_path, org_id, contact_*). |
+| `ConnectError` against real EWS (smoke test exit 1) | No egress path from the server. Usually the corporate proxy: set `ZELLE_PROXY_URL` (or ambient `https_proxy`/`no_proxy`), or request a firewall rule for `*.earlywarning.io:443`. If the proxy intercepts TLS, also set `ZELLE_CA_CERTIFICATE_PATH` to the bank CA bundle — and note an intercepting proxy breaks mTLS: if EWS requires mTLS, the proxy must CONNECT-tunnel, not intercept. |
 
 ---
 

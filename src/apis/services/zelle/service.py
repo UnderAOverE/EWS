@@ -112,8 +112,9 @@ def _build_ssl_context(settings: ZelleSettings) -> ssl.SSLContext | bool:
 def _build_http_client(settings: ZelleSettings) -> httpx.AsyncClient:
 
     """
-    Construct the single zelle-owned async HTTP client, with TLS/mTLS from settings. Per-request
-    timeouts are applied by the token broker and ZOMS client, so none is set here.
+    Construct the single zelle-owned async HTTP client, with TLS/mTLS and the optional corporate
+    egress proxy from settings. Per-request timeouts are applied by the token broker and ZOMS
+    client, so none is set here.
 
     :param settings: Zelle facade settings.
     :type settings: ZelleSettings
@@ -121,12 +122,16 @@ def _build_http_client(settings: ZelleSettings) -> httpx.AsyncClient:
     :rtype: httpx.AsyncClient
     """
 
+    # Unwrapped only here, at the construction site; logged as a boolean because the URL may
+    # embed proxy credentials.
+    proxy = settings.proxy_url.get_secret_value() if settings.proxy_url is not None else None
     logger.debug(
-        "building southbound httpx.AsyncClient (verify_ssl=%s, mtls=%s)",
+        "building southbound httpx.AsyncClient (verify_ssl=%s, mtls=%s, proxy_configured=%s)",
         settings.verify_ssl,
         settings.client_certificate_path is not None,
+        proxy is not None,
     )
-    return httpx.AsyncClient(verify=_build_ssl_context(settings))
+    return httpx.AsyncClient(verify=_build_ssl_context(settings), proxy=proxy)
 # endDef
 
 

@@ -102,6 +102,12 @@ class ZelleSettings(BaseSettings):
     ca_certificate_path: Path | None = None
     client_certificate_path: Path | None = None
     client_key_path: Path | None = None
+    # Corporate egress forward proxy for ALL southbound zelle traffic (token + ZOMS), e.g.
+    # ``http://proxy.bank.local:8080``. SecretStr because bank proxy URLs may embed credentials
+    # (``http://user:pass@proxy:8080``) — never logged; unwrapped only where the client is built.
+    # None keeps httpx's default behavior, which still honors ambient HTTPS_PROXY/NO_PROXY env
+    # vars — the explicit setting exists to pin the proxy for zelle without touching the host's.
+    proxy_url: SecretStr | None = None
     # Org constants injected into every schedule payload; lengths per docs/zoms-api-reference.md.
     org_id: Annotated[str, Field(min_length=3, max_length=3)]
     participant_name: Annotated[str, Field(min_length=1, max_length=50)]

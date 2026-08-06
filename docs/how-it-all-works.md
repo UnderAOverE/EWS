@@ -380,6 +380,7 @@ can also pass them in directly). The important ones:
 | `ZELLE_SIGNING_KID` | Key id EWS has registered for us |
 | `ZELLE_SIGNING_KEY_PATH` | Path to the RS256 **private key** on disk (never in git, never in env) |
 | `ZELLE_CA_CERTIFICATE_PATH` | Private CA bundle to trust EWS (omit → system CAs) — for the zelle-owned mTLS HTTP client |
+| `ZELLE_PROXY_URL` | Corporate egress forward proxy for all southbound traffic (token + ZOMS). Optional; may embed credentials (SecretStr, never logged). Unset → httpx still honors ambient `HTTPS_PROXY`/`NO_PROXY` |
 | `ZELLE_CLIENT_CERTIFICATE_PATH` / `ZELLE_CLIENT_KEY_PATH` | The EWS **mTLS** client keypair (both or neither — a half-set pair fails startup); crown jewels, mounted read-only |
 | `ZELLE_VERIFY_SSL` | TLS verification (default `true`); set `false` only for non-prod |
 | _(database + collection names)_ | Not env vars — the `zelle_*` collection names and the `fdn-c-amp-fapis-py` database come from the `DatabasesCollections` constants in `common/constants.py` |

@@ -91,6 +91,12 @@ ZELLE_SIGNING_KEY_PATH=/secrets/zelle/signing.pem     # mounted read-only
 # ZELLE_CLIENT_CERTIFICATE_PATH=/secrets/zelle/client.pem
 # ZELLE_CLIENT_KEY_PATH=/secrets/zelle/client.key
 
+# Corporate egress proxy — set ONLY if southbound traffic must go through a
+# forward proxy (ConnectError on the token endpoint is the usual tell). May
+# embed credentials; it is a SecretStr and never logged. When unset, ambient
+# HTTPS_PROXY/NO_PROXY env vars still apply (httpx default).
+# ZELLE_PROXY_URL=http://<user>:<pass>@proxy.bank.local:8080
+
 # Org identity + contact block (injected into every EWS schedule)
 ZELLE_ORG_ID=<3-char org id>
 ZELLE_PARTICIPANT_NAME=<...>
