@@ -109,6 +109,30 @@ to `CANCELLED`.
 - Success: `200 OK`
 - Body: `maintenanceEventId` (as above)
 
+### 3.5 Get Maintenance Event (status read)
+
+> ⚠️ Not in the photographed spec pages. Reported by our ops team (2026-08-06): EWS
+> exposes a read endpoint keyed by the maintenance event id. Everything below except
+> the path is **assumed** until EWS confirms — see open question #2.
+
+- Endpoint: `GET /v1/events/{maintenanceEventId}` (path assumed to follow the
+  standard REST form; the internal report wrote it as `/v1/events.{maintenanceEventId}`
+  — confirm the separator)
+- Success: `200 OK` (assumed)
+- Headers: common headers per §2; no `idempotency-id` (reads are naturally idempotent)
+
+Assumed response body (parse leniently until confirmed):
+
+```json
+{
+  "maintenanceEventId": "f879562c-b912-44e9-a592-71d3aef09afb",
+  "status": "SCHEDULED"
+}
+```
+
+`status` presumably uses the lifecycle vocabulary: `SCHEDULED`, `IN_PROGRESS`,
+`COMPLETE`, `CANCELLED`.
+
 ### Event lifecycle (implied)
 
 `SCHEDULED → IN_PROGRESS → COMPLETE`, with `SCHEDULED → CANCELLED` allowed only
@@ -171,8 +195,10 @@ and mutual TLS (mTLS).
 ## 5. Open questions to confirm with EWS
 
 1. Error response body shape and error-code catalog (only success codes were visible).
-2. Is there a **read/status** endpoint (e.g. `GET /v1/events/{id}` or a list) to query
-   event state, or is state only known from responses to the four POSTs?
+2. **Partially answered 2026-08-06** — a status read keyed by `maintenanceEventId`
+   exists (see §3.5). Still to confirm with EWS: the exact path form, the response
+   body schema, the status vocabulary, error codes (404 for unknown id?), and
+   whether a **list** endpoint also exists.
 3. Does `idempotency-id` apply to `start`/`complete`/`cancel`, or only `schedule`?
 4. Must `request-id` be unique per attempt (i.e., new value on retry) while
    `idempotency-id` stays constant?

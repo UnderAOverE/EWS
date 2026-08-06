@@ -11,7 +11,7 @@
 # Author        : Shane Reddy.                                                                        #
 #                                                                                                     #
 # Explanation   : create_fake_ews_app — a self-contained FastAPI stub of the EWS /token endpoint      #
-#                 and the four ZOMS operations: header enforcement, body validation via the real      #
+#                 and the five ZOMS operations: header enforcement, body validation via the real      #
 #                 southbound models, in-memory lifecycle state, idempotency-id replay returning       #
 #                 the SAME 201 body, and fault injection via the x-fake-fault header.                 #
 # Dependencies  : fastapi, pydantic, apis.models.zelle.southbound.                                    #
@@ -92,10 +92,10 @@ class _FakeEwsState:
 def create_fake_ews_app() -> FastAPI:
 
     """
-    Build a self-contained fake EWS application: ``POST /token`` plus the four ZOMS operations
-    under ``/zoms/v1/events``, with per-app in-memory state and fault injection via the
-    ``x-fake-fault`` header (``500``, ``429``, ``401`` — injected once, then behaves — and
-    ``slow``).
+    Build a self-contained fake EWS application: ``POST /token`` plus the five ZOMS operations
+    (four POSTs and the status read) under ``/zoms/v1/events``, with per-app in-memory state and
+    fault injection via the ``x-fake-fault`` header (``500``, ``429``, ``401`` — injected once,
+    then behaves — and ``slow``).
 
     :return: The fake EWS FastAPI application.
     :rtype: FastAPI
@@ -358,6 +358,39 @@ def create_fake_ews_app() -> FastAPI:
         """
 
         return await _lifecycle(request, "cancel", STATUS_SCHEDULED, STATUS_CANCELLED)
+    # endDef
+
+    @app.get("/zoms/v1/events/{maintenance_event_id}")
+    async def get_status(request: Request, maintenance_event_id: str) -> JSONResponse:
+
+        """
+        Fake status read: enforce headers (no idempotency-id — reads are naturally idempotent)
+        and return the event's current lifecycle status per vendor doc §3.5's assumed shape.
+
+        :param request: The incoming request.
+        :type request: Request
+        :param maintenance_event_id: The EWS maintenance event id from the path.
+        :type maintenance_event_id: str
+        :return: 200 with ``maintenanceEventId`` and ``status``, or 401/400/404 on failure.
+        :rtype: JSONResponse
+        """
+
+        fault = await _maybe_fault(request)
+        if fault is not None:
+            return fault
+        # endIf
+        header_error = _missing_zoms_headers(request, require_idempotency=False)
+        if header_error is not None:
+            return header_error
+        # endIf
+        current = state.event_statuses.get(maintenance_event_id)
+        if current is None:
+            return JSONResponse(status_code=404, content={"error": "unknown maintenanceEventId"})
+        # endIf
+        return JSONResponse(
+            status_code=200,
+            content={"maintenanceEventId": maintenance_event_id, "status": current},
+        )
     # endDef
 
     return app

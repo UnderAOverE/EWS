@@ -68,6 +68,7 @@ from src.apis.models.zelle.northbound import (
     MaintenanceEventResponse,
     ResolveRequest,
     ScheduleEventRequest,
+    UpstreamStatusResponse,
 )
 from src.apis.models.zelle.records import AuditRecord, EventRecord, IdempotencyRecord
 from src.apis.models.zelle.southbound import EwsScheduleRequest, format_ews_datetime
@@ -655,6 +656,62 @@ class EventService:
         records = await self._events.list_events(status=status)
         return EventListResponse(
             events=[self._to_response(record, correlation_id) for record in records],
+        )
+    # endDef
+
+    async def upstream_status(
+        self,
+        event_id: str,
+        *,
+        client_id: str,
+        correlation_id: str,
+        ) -> UpstreamStatusResponse:
+
+        """
+        Read the live upstream status of one event — the one read that IS upstream authority,
+        at the instant of the check.
+
+        Allowed in ANY local status that carries an upstream id, including UNCERTAIN (a live
+        read is exactly what reconciliation needs). Deliberately pure: no state transition, no
+        INTENT/OUTCOME audit pair (those bracket state-changing southbound calls), and no
+        ``last_confirmed_upstream_at`` touch — the stored record is left untouched.
+
+        :param event_id: Facade event id.
+        :type event_id: str
+        :param client_id: Attributed caller identity from ``X-Client-Id``.
+        :type client_id: str
+        :param correlation_id: Correlation id bound to this request.
+        :type correlation_id: str
+        :return: The live status view (local status + upstream status side by side).
+        :rtype: UpstreamStatusResponse
+        :raises NotFoundError: If no event with ``event_id`` exists.
+        :raises ConflictError: If the event has no upstream id yet (nothing to look up).
+        """
+
+        event = await self._events.get(event_id)
+        if event is None:
+            raise NotFoundError(f"No maintenance event with id {event_id}.")
+        # endIf
+        if event.ews_event_id is None:
+            raise ConflictError(
+                "The event has no upstream id yet; its live status cannot be looked up.",
+            )
+        # endIf
+        logger.info(
+            "upstream status check: event_id=%s local_status=%s client_id=%s",
+            event.event_id,
+            event.status.value,
+            client_id,
+        )
+        status_response, _request_ids = await self._zoms.get_status(event.ews_event_id)
+        raw = status_response.status
+        upstream = raw.strip().upper() if raw is not None and raw.strip() else None
+        return UpstreamStatusResponse(
+            event_id=event.event_id,
+            local_status=event.status,
+            upstream_status=upstream,
+            checked_at=datetime.now(timezone.utc),
+            correlation_id=correlation_id,
         )
     # endDef
 

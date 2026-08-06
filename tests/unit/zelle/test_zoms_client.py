@@ -63,6 +63,7 @@ LOGGER = logging.getLogger(__name__)
 SCHEDULE_URL = "http://fake-ews/zoms/v1/events/schedule"
 START_URL = "http://fake-ews/zoms/v1/events/start"
 EWS_EVENT_ID = "f879562c-b912-44e9-a592-71d3aef09afb"
+STATUS_URL = f"http://fake-ews/zoms/v1/events/{EWS_EVENT_ID}"
 SCHEDULE_201 = {"maintenanceEventId": EWS_EVENT_ID, "status": "SCHEDULED"}
 
 
@@ -408,6 +409,87 @@ async def test_no_token_or_body_in_logs(
     assert "tok-1" not in caplog.text
     assert "TTechnology@BBO.com" not in caplog.text
     assert "9999999977" not in caplog.text
+# endDef
+
+
+@respx.mock
+async def test_get_status_happy_path_headers(zoms: ZomsClient) -> None:
+
+    """
+    The status read hits the exact GET URL with bearer token, accept/content-type, a request-id
+    matching the returned audit list, and NO idempotency-id; the 200 body parses leniently.
+    """
+
+    route = respx.get(STATUS_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={"maintenanceEventId": EWS_EVENT_ID, "status": "IN_PROGRESS"},
+        ),
+    )
+    parsed, request_ids = await zoms.get_status(EWS_EVENT_ID)
+    assert parsed.maintenance_event_id == EWS_EVENT_ID
+    assert parsed.status == "IN_PROGRESS"
+    assert route.call_count == 1
+    request = route.calls[0].request
+    assert request.headers["Authorization"] == "Bearer tok-1"
+    assert request.headers["accept"] == "application/json"
+    assert request.headers["request-id"] == request_ids[0]
+    assert "idempotency-id" not in request.headers
+    assert len(request_ids) == 1
+# endDef
+
+
+@respx.mock
+async def test_get_status_4xx_maps_to_rejected(zoms: ZomsClient) -> None:
+
+    """
+    A definite 4xx on the status read (e.g. unknown id -> 404) maps to UpstreamRejectedError
+    with no retry.
+    """
+
+    route = respx.get(STATUS_URL).mock(return_value=httpx.Response(404, json={"error": "x"}))
+    with pytest.raises(UpstreamRejectedError):
+        await zoms.get_status(EWS_EVENT_ID)
+    # endWith
+    assert route.call_count == 1
+# endDef
+
+
+@respx.mock
+async def test_get_status_5xx_retries_then_unavailable(zoms: ZomsClient) -> None:
+
+    """
+    A 5xx on the status read is plainly transient (reads are side-effect free): it retries with
+    a fresh request-id, then maps to UpstreamUnavailableError — never UNCERTAIN.
+    """
+
+    route = respx.get(STATUS_URL).mock(return_value=httpx.Response(503, json={"error": "x"}))
+    with pytest.raises(UpstreamUnavailableError):
+        await zoms.get_status(EWS_EVENT_ID)
+    # endWith
+    assert route.call_count == 2
+    first = route.calls[0].request.headers["request-id"]
+    second = route.calls[1].request.headers["request-id"]
+    assert first != second
+# endDef
+
+
+@respx.mock
+async def test_get_status_post_send_failure_is_retried(zoms: ZomsClient) -> None:
+
+    """
+    A post-send failure (read timeout) on the status read retries and succeeds — the read
+    deliberately inverts the lifecycle POST rule, where the same failure is UNCERTAIN.
+    """
+
+    route = respx.get(STATUS_URL)
+    route.side_effect = [
+        httpx.ReadTimeout("boom"),
+        httpx.Response(200, json={"maintenanceEventId": EWS_EVENT_ID, "status": "SCHEDULED"}),
+    ]
+    parsed, request_ids = await zoms.get_status(EWS_EVENT_ID)
+    assert parsed.status == "SCHEDULED"
+    assert len(request_ids) == 2
 # endDef
 
 

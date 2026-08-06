@@ -135,4 +135,20 @@ class EwsScheduleResponse(BaseModel):
 # endClass
 
 
+class EwsEventStatusResponse(BaseModel):
+
+    """
+    LENIENT parse of the ``GET /v1/events/{maintenanceEventId}`` 200 body — the response schema
+    is unconfirmed (vendor doc §3.5 / open question #2), so unknown fields are retained via
+    ``extra="allow"`` and both fields may be absent. ``status`` stays a raw string here: the
+    upstream vocabulary is not ours to enumerate until EWS confirms it.
+    """
+
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="allow")
+
+    maintenance_event_id: str | None = None
+    status: str | None = None
+# endClass
+
+
 # end_apis/models/zelle/southbound.py

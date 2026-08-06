@@ -114,6 +114,7 @@ endpoint speaks JSON.
 | Cancel a window that hasn't started | `POST /v1/maintenance-events/{eventId}/cancel` |
 | List events (optionally by status) | `GET /v1/maintenance-events` |
 | Look up one event | `GET /v1/maintenance-events/{eventId}` |
+| Check the **live** upstream status (calls EWS) | `GET /v1/maintenance-events/{eventId}/upstream-status` |
 | Operator: manually resolve a stuck event | `POST /v1/admin/maintenance-events/{eventId}/resolve` |
 
 ### The headers that matter
@@ -212,6 +213,16 @@ Plain-English status meanings for consumers:
 a live query to EWS. That's deliberate (it keeps reads fast and cheap), but
 tell consumers so nobody treats a `GET` as gospel about EWS's current state.
 
+The one exception is `GET /{eventId}/upstream-status`: it **does** call EWS's
+status endpoint live and returns `localStatus` and `upstreamStatus` side by
+side (plus `checkedAt`). It changes nothing — no state transition, no audit
+INTENT/OUTCOME pair, and it doesn't touch `lastConfirmedUpstreamAt` — it's a
+pure look, useful for pre-flighting a start, checking an `UNCERTAIN` event
+before a resolve, or a UI "refresh from source" button. It needs the event to
+have an upstream id already (`PENDING_UPSTREAM_ID` → 409). Tell consumers to
+use it deliberately, not for routine polling — every call is a real
+southbound request.
+
 ### Copy-paste: curl for every call
 
 Set a base URL once (`$BASE` is wherever the host app mounts the facade), then
@@ -309,10 +320,12 @@ config):
 | start | `POST {api_base_url}/v1/events/start` |
 | complete | `POST {api_base_url}/v1/events/complete` |
 | cancel | `POST {api_base_url}/v1/events/cancel` |
+| upstream-status (live read) | `GET {api_base_url}/v1/events/{maintenanceEventId}` |
 
 Each carries `Authorization: Bearer <token>`, a fresh `request-id` per
 attempt, and (on schedule only) an `idempotency-id` so a retry can't
-double-book.
+double-book. The status read is side-effect free, so it retries transient
+failures freely and can never land an event in `UNCERTAIN`.
 
 ### The dangerous part: retries
 

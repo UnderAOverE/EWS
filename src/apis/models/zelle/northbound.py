@@ -162,6 +162,26 @@ class EventListResponse(BaseModel):
 # endClass
 
 
+class UpstreamStatusResponse(BaseModel):
+
+    """
+    Consumer view of a live upstream status check — the one read that IS upstream authority,
+    at the instant of ``checked_at``. ``upstream_status`` stays a plain string (upper-cased):
+    the upstream vocabulary is unconfirmed, and an unknown value must surface verbatim rather
+    than crash or be guessed into the facade's own enum. ``None`` means the upstream response
+    omitted a status. The check is not persisted; the facade's stored view is unchanged.
+    """
+
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
+    event_id: str
+    local_status: EventStatus
+    upstream_status: str | None
+    checked_at: datetime
+    correlation_id: str
+# endClass
+
+
 class ResolveRequest(BaseModel):
 
     """

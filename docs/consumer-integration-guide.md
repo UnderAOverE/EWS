@@ -32,6 +32,7 @@ All paths are relative to wherever the host app mounts the API (`$BASE`).
 | Cancel a window that hasn't started | `POST /v1/maintenance-events/{eventId}/cancel` |
 | List events (optionally `?status=`) | `GET /v1/maintenance-events` |
 | Look up one event | `GET /v1/maintenance-events/{eventId}` |
+| Check the live status at the source | `GET /v1/maintenance-events/{eventId}/upstream-status` |
 
 (There is also an `/v1/admin/...` surface for the operations team. It is not
 for consumers — don't call it.)
@@ -154,6 +155,25 @@ Same shape for `/complete` and `/cancel`. Rules:
 
 **Reads show last-known state**, not a live upstream query. `GET` is fast
 and cheap but reflects intent as of the last confirmed action.
+
+**The exception — the live status check.** `GET /{eventId}/upstream-status`
+queries the source of truth in real time and returns both views side by side:
+
+```jsonc
+{
+  "eventId": "9f2c…",
+  "localStatus": "IN_PROGRESS",     // what the service has on record
+  "upstreamStatus": "IN_PROGRESS",  // what the source reports right now (may be null)
+  "checkedAt": "2026-08-06T14:02:11Z",
+  "correlationId": "c-3b1e…"
+}
+```
+
+It changes nothing — pure read. Use it deliberately (each call is a real
+request to the upstream system, slower and rate-limited): pre-flighting a
+start, investigating a stuck event, or a "refresh from source" button. Use
+the plain `GET /{eventId}` for routine polling. A `409` means the event has
+no upstream id yet (a `202`-scheduled event still being reconciled).
 
 ## Errors — one shape, always
 

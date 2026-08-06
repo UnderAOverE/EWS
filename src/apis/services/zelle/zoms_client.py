@@ -10,9 +10,9 @@
 # Version       : 1.0.0.                                                                              #
 # Author        : Shane Reddy.                                                                        #
 #                                                                                                     #
-# Explanation   : ZomsClient — the sole southbound HTTP adapter for the four ZOMS operations.         #
+# Explanation   : ZomsClient — the sole southbound HTTP adapter for the five ZOMS operations.         #
 #                 Owns the response-mapping/retry matrix (401-refresh-once, one honored 429,          #
-#                 transient retries for schedule only, post-send ambiguity -> UNCERTAIN), mints       #
+#                 transient retries for safe ops only, post-send ambiguity -> UNCERTAIN), mints       #
 #                 a fresh request-id per attempt, and returns every request-id used for audit.        #
 # Dependencies  : httpx, pydantic, apis.config.zelle, apis.models.zelle.errors,                       #
 #                 apis.models.zelle.southbound, apis.services.zelle.token_broker.                     #
@@ -54,6 +54,7 @@ from src.apis.models.zelle.errors import (
     UpstreamUncertainError,
 )
 from src.apis.models.zelle.southbound import (
+    EwsEventStatusResponse,
     EwsLifecycleRequest,
     EwsScheduleRequest,
     EwsScheduleResponse,
@@ -88,11 +89,12 @@ POST_SEND_ERRORS = (
 class ZomsClient:
 
     """
-    Typed southbound adapter for the ZOMS maintenance-event operations. Every call goes through
-    :meth:`_post`, which owns the retry/response-mapping matrix; each operation returns the list
-    of EWS ``request-id`` values used (one per HTTP attempt) so the audit trail can bind
-    correlation ids to upstream attempts. Request/response bodies are never logged here — they
-    carry PII and tokens; only method, URL, status, request-id, and elapsed time are.
+    Typed southbound adapter for the ZOMS maintenance-event operations. Writes go through
+    :meth:`_post` and the status read through :meth:`_get`; each owns its retry/response-mapping
+    matrix, and each operation returns the list of EWS ``request-id`` values used (one per HTTP
+    attempt) so the audit trail can bind correlation ids to upstream attempts. Request/response
+    bodies are never logged here — they carry PII and tokens; only method, URL, status,
+    request-id, and elapsed time are.
     """
 
     def __init__(
@@ -212,6 +214,31 @@ class ZomsClient:
         """
 
         return await self._lifecycle(CANCEL_OPERATION, ews_event_id)
+    # endDef
+
+    async def get_status(
+        self,
+        ews_event_id: str,
+        ) -> tuple[EwsEventStatusResponse, list[str]]:
+
+        """
+        Read the live upstream status of a maintenance event
+        (``GET /v1/events/{maintenanceEventId}``). A read is side-effect free, so unlike the
+        lifecycle POSTs every transport failure and 5xx is plainly retryable and nothing maps
+        to UNCERTAIN.
+
+        :param ews_event_id: The EWS maintenance event id.
+        :type ews_event_id: str
+        :return: The leniently-parsed 200 body and the request-ids used.
+        :rtype: tuple[EwsEventStatusResponse, list[str]]
+        :raises UpstreamUnavailableError: After exhausted transient retries (connect/read/5xx).
+        :raises RateLimitedError: On a second 429 after the single honored Retry-After.
+        :raises UpstreamRejectedError: On a definite EWS 4xx rejection (including unknown id).
+        :raises AuthConfigError: When two consecutive tokens are rejected.
+        """
+
+        response, request_ids = await self._get(f"/v1/events/{ews_event_id}")
+        return self._parse_status_response(response), request_ids
     # endDef
 
     async def _lifecycle(
@@ -400,6 +427,150 @@ class ZomsClient:
                 f"EWS returned HTTP {status} for {operation}; execution state unknown.",
             )
         # endWhile
+    # endDef
+
+    async def _get(self, path: str) -> tuple[httpx.Response, list[str]]:
+
+        """
+        Execute one ZOMS GET under the read retry matrix: a read never mutates upstream state,
+        so ANY transport failure or 5xx is transient (bounded by ``MAX_TRANSIENT_ATTEMPTS``) and
+        UNCERTAIN is never raised; a definite 401 refreshes the token and retries exactly once;
+        one 429 Retry-After is honored. A fresh ``request-id`` is minted per attempt.
+
+        :param path: The ZOMS path (e.g. ``/v1/events/{maintenanceEventId}``).
+        :type path: str
+        :return: The 2xx response and every request-id used.
+        :rtype: tuple[httpx.Response, list[str]]
+        :raises UpstreamUnavailableError: On exhausted transport failures or 5xx responses.
+        :raises RateLimitedError: On a second 429.
+        :raises UpstreamRejectedError: On any other definite 4xx.
+        :raises AuthConfigError: On a second consecutive 401.
+        """
+
+        url = f"{self._base_url}{path}"
+        request_ids: list[str] = []
+        auth_retried = False
+        rate_retried = False
+        transient_failures = 0
+        while True:
+            token = await self._broker.get()
+            request_id = str(uuid.uuid4())
+            request_ids.append(request_id)
+            headers = {
+                "Authorization": f"Bearer {token}",
+                "accept": "application/json",
+                "content-type": "application/json",
+                "request-id": request_id,
+            }
+            started = time.monotonic()
+            logger.debug(
+                "southbound GET %s request-id=%s attempt=%d",
+                url,
+                request_id,
+                len(request_ids),
+            )
+            try:
+                response = await self._client.get(url, headers=headers, timeout=self._timeout)
+            except httpx.TransportError as exc:
+                # Reads are side-effect free: even a post-send failure is safe to retry.
+                transient_failures += 1
+                if transient_failures < MAX_TRANSIENT_ATTEMPTS:
+                    logger.warning(
+                        "GET %s transport failure (%s); retrying request_id=%s",
+                        url,
+                        type(exc).__name__,
+                        request_id,
+                    )
+                    continue
+                # endIf
+                raise UpstreamUnavailableError(
+                    "EWS is unreachable; the status read failed cleanly.",
+                ) from exc
+            # endTryExcept
+            elapsed = time.monotonic() - started
+            status = response.status_code
+            logger.info(
+                "GET %s status=%s request_id=%s elapsed=%.3fs",
+                url,
+                status,
+                request_id,
+                elapsed,
+            )
+            if 200 <= status < 300:
+                return response, request_ids
+            # endIf
+            if status == 401:
+                if not auth_retried:
+                    self._broker.invalidate(token)
+                    auth_retried = True
+                    continue
+                # endIf
+                raise AuthConfigError(
+                    "ZOMS rejected two consecutive tokens; "
+                    "check client registration and signing key.",
+                )
+            # endIf
+            if status == 429:
+                delay = parse_retry_after(response)
+                if not rate_retried:
+                    rate_retried = True
+                    await asyncio.sleep(delay)
+                    continue
+                # endIf
+                raise RateLimitedError(
+                    "EWS is rate limiting; retry later.",
+                    retry_after_seconds=delay,
+                )
+            # endIf
+            if 400 <= status < 500:
+                # Includes an unknown maintenanceEventId — upstream drift the facade surfaces
+                # as its own 502, never as a consumer 4xx. The body is not parsed or logged.
+                raise UpstreamRejectedError(
+                    f"EWS rejected the status read (HTTP {status}).",
+                )
+            # endIf
+            # 5xx: a failed read changed nothing — plain transient.
+            transient_failures += 1
+            if transient_failures < MAX_TRANSIENT_ATTEMPTS:
+                logger.warning(
+                    "GET %s returned HTTP %s; retrying request_id=%s",
+                    url,
+                    status,
+                    request_id,
+                )
+                continue
+            # endIf
+            raise UpstreamUnavailableError(
+                f"EWS is unavailable (HTTP {status}).",
+            )
+        # endWhile
+    # endDef
+
+    def _parse_status_response(self, response: httpx.Response) -> EwsEventStatusResponse:
+
+        """
+        Parse the status 200 body leniently: an unparseable or unexpected body degrades to
+        absent fields, never a crash — the vendor's success must not become a facade failure
+        (the response schema is unconfirmed; vendor doc §3.5).
+
+        :param response: The 2xx status response.
+        :type response: httpx.Response
+        :return: The lenient status response model.
+        :rtype: EwsEventStatusResponse
+        """
+
+        try:
+            data = response.json()
+        except ValueError:
+            logger.warning("status success body was not JSON; treating fields as absent")
+            return EwsEventStatusResponse()
+        # endTryExcept
+        try:
+            return EwsEventStatusResponse.model_validate(data)
+        except ValidationError:
+            logger.warning("status success body had unexpected shape; fields treated absent")
+            return EwsEventStatusResponse()
+        # endTryExcept
     # endDef
 
     def _parse_schedule_response(self, response: httpx.Response) -> EwsScheduleResponse:

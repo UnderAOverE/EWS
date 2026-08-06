@@ -12,8 +12,9 @@
 #                                                                                                     #
 # Explanation   : Consumer-facing maintenance-event router: schedule (idempotent), the three          #
 #                 lifecycle verbs (start/complete/cancel with typed ticket confirmation and           #
-#                 dry-run), and local reads. Handlers stay thin — resolve dependencies, call          #
-#                 the service, serialize; every response carries X-Correlation-Id.                    #
+#                 dry-run), local reads, and a live upstream status read. Handlers stay thin —        #
+#                 resolve dependencies, call the service, serialize; every response carries           #
+#                 X-Correlation-Id.                                                                   #
 # Dependencies  : fastapi, apis.dependencies.types, apis.models.zelle.enums,                          #
 #                 apis.models.zelle.errors, apis.models.zelle.northbound,                             #
 #                 apis.services.zelle.event_service.                                                  #
@@ -158,6 +159,29 @@ authority.
 - `event_id` — the facade `eventId` returned by schedule.
 
 **Responses**: `200` with the consumer event view · `404` when no such event exists locally.
+"""
+
+_UPSTREAM_STATUS_DESCRIPTION = """
+Read the **live upstream status** of one event. Unlike every other read, this **does** call EWS —
+synchronously — and returns what the upstream reports right now, side by side with the facade's own
+stored status. Nothing is persisted and no state changes: this is a pure look, not a reconcile.
+
+Use it deliberately (each call is a real southbound request): pre-flighting a start, checking an
+`UNCERTAIN` event for drift before an operator resolve, or a UI "refresh from source" action.
+Routine polling should use the plain `GET /{event_id}` local read instead.
+
+**Headers**
+- `X-Client-Id` **(required)** — caller identity.
+- `X-Correlation-Id` *(optional)* — trace id; minted if omitted.
+
+**Path**
+- `event_id` — the facade `eventId` returned by schedule.
+
+**Response body**: `eventId`, `localStatus` (the facade's stored status), `upstreamStatus` (what the
+upstream reported, upper-cased; may be `null` if it omitted one), `checkedAt`, `correlationId`.
+
+**Responses**: `200` live view · `404` unknown event · `409` the event has no upstream id yet
+(e.g. `PENDING_UPSTREAM_ID`) · `502` / `503` upstream problem.
 """
 
 
@@ -489,6 +513,48 @@ async def get_event(
 
     logger.debug("get event event_id=%s client_id=%s", event_id, client_id)
     response = await service.get_event(event_id, correlation_id=correlation_id)
+    return JSONResponse(
+        status_code=HTTPCodes.HTTP_SUCCESS,
+        content=response.model_dump(mode="json", by_alias=True),
+        headers={"X-Correlation-Id": correlation_id},
+    )
+# endDef
+
+
+@events_router.get(
+    "/{event_id}/upstream-status",
+    summary="Get one event's live upstream status (calls EWS)",
+    response_description="The live upstream status view.",
+    description=_UPSTREAM_STATUS_DESCRIPTION,
+)
+async def get_upstream_status(
+    event_id: str,
+    correlation_id: ZelleCorrelationIdDependency,
+    client_id: ZelleClientIdDependency,
+    service: ZelleEventServiceDependency,
+    ) -> JSONResponse:
+
+    """
+    Read one event's live upstream status (200) — a real southbound read; no state change.
+
+    :param event_id: Facade event id from the route path.
+    :type event_id: str
+    :param correlation_id: Correlation id bound to this request.
+    :type correlation_id: str
+    :param client_id: Attributed caller identity.
+    :type client_id: str
+    :param service: The event orchestration service.
+    :type service: EventService
+    :return: The live upstream status view.
+    :rtype: JSONResponse
+    """
+
+    logger.debug("upstream status event_id=%s client_id=%s", event_id, client_id)
+    response = await service.upstream_status(
+        event_id,
+        client_id=client_id,
+        correlation_id=correlation_id,
+    )
     return JSONResponse(
         status_code=HTTPCodes.HTTP_SUCCESS,
         content=response.model_dump(mode="json", by_alias=True),

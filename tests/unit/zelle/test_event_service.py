@@ -55,7 +55,11 @@ from src.apis.models.zelle.errors import (
     UpstreamUncertainError,
 )
 from src.apis.models.zelle.northbound import ResolveRequest, ScheduleEventRequest
-from src.apis.models.zelle.southbound import EwsScheduleRequest, EwsScheduleResponse
+from src.apis.models.zelle.southbound import (
+    EwsEventStatusResponse,
+    EwsScheduleRequest,
+    EwsScheduleResponse,
+)
 from src.apis.repositories.zelle.audit import get_audit_repository
 from src.apis.repositories.zelle.events import get_events_repository
 from src.apis.repositories.zelle.idempotency import get_idempotency_repository
@@ -90,6 +94,11 @@ class _StubZoms:
         self.schedule_response = EwsScheduleResponse(maintenance_event_id=EWS_EVENT_ID)
         self.schedule_error: Exception | None = None
         self.lifecycle_error: Exception | None = None
+        self.status_response = EwsEventStatusResponse(
+            maintenance_event_id=EWS_EVENT_ID,
+            status="SCHEDULED",
+        )
+        self.status_error: Exception | None = None
         self.calls: list[tuple[str, str]] = []
     # endDef
 
@@ -148,6 +157,22 @@ class _StubZoms:
             raise self.lifecycle_error
         # endIf
         return [str(uuid.uuid4())]
+    # endDef
+
+    async def get_status(
+        self,
+        ews_event_id: str,
+        ) -> tuple[EwsEventStatusResponse, list[str]]:
+
+        """
+        Record the call; raise the configured error or return the configured status response.
+        """
+
+        self.calls.append(("status", ews_event_id))
+        if self.status_error is not None:
+            raise self.status_error
+        # endIf
+        return self.status_response, [str(uuid.uuid4())]
     # endDef
 # endClass
 
@@ -767,6 +792,112 @@ async def test_get_event_not_found(harness: SimpleNamespace) -> None:
 
     with pytest.raises(NotFoundError):
         await harness.service.get_event("missing", correlation_id="c-1")
+    # endWith
+# endDef
+
+
+async def test_upstream_status_happy_path(harness: SimpleNamespace) -> None:
+
+    """
+    A live status check returns local + upstream statuses side by side, calls the ZOMS status
+    read with the stored EWS id, and writes NO audit documents (a read is not a state change).
+    """
+
+    scheduled = await harness.service.schedule(
+        _request(),
+        client_id=CLIENT_ID,
+        idempotency_key=None,
+        correlation_id="c-1",
+    )
+    audit_before = await harness.audit._collection.count_documents({})
+    view = await harness.service.upstream_status(
+        scheduled.response.event_id,
+        client_id=CLIENT_ID,
+        correlation_id="c-2",
+    )
+    assert view.event_id == scheduled.response.event_id
+    assert view.local_status is EventStatus.SCHEDULED
+    assert view.upstream_status == "SCHEDULED"
+    assert view.checked_at.tzinfo is not None
+    assert view.correlation_id == "c-2"
+    assert ("status", EWS_EVENT_ID) in harness.zoms.calls
+    audit_after = await harness.audit._collection.count_documents({})
+    assert audit_after == audit_before
+# endDef
+
+
+async def test_upstream_status_normalizes_and_tolerates_absent(
+    harness: SimpleNamespace,
+    ) -> None:
+
+    """
+    The upstream status string is upper-cased/stripped; a blank or absent status surfaces as
+    None rather than crashing (the vendor response schema is unconfirmed).
+    """
+
+    scheduled = await harness.service.schedule(
+        _request(),
+        client_id=CLIENT_ID,
+        idempotency_key=None,
+        correlation_id="c-1",
+    )
+    harness.zoms.status_response = EwsEventStatusResponse(status=" in_progress ")
+    view = await harness.service.upstream_status(
+        scheduled.response.event_id,
+        client_id=CLIENT_ID,
+        correlation_id="c-2",
+    )
+    assert view.upstream_status == "IN_PROGRESS"
+    harness.zoms.status_response = EwsEventStatusResponse()
+    view = await harness.service.upstream_status(
+        scheduled.response.event_id,
+        client_id=CLIENT_ID,
+        correlation_id="c-3",
+    )
+    assert view.upstream_status is None
+# endDef
+
+
+async def test_upstream_status_without_upstream_id_conflicts(
+    harness: SimpleNamespace,
+    ) -> None:
+
+    """
+    An event still waiting for its upstream id (PENDING_UPSTREAM_ID) cannot be looked up live —
+    409 CONFLICT, and the ZOMS status read is never called.
+    """
+
+    harness.zoms.schedule_response = EwsScheduleResponse()
+    scheduled = await harness.service.schedule(
+        _request(),
+        client_id=CLIENT_ID,
+        idempotency_key=None,
+        correlation_id="c-1",
+    )
+    assert scheduled.response.status is EventStatus.PENDING_UPSTREAM_ID
+    with pytest.raises(ConflictError):
+        await harness.service.upstream_status(
+            scheduled.response.event_id,
+            client_id=CLIENT_ID,
+            correlation_id="c-2",
+        )
+    # endWith
+    assert ("status", EWS_EVENT_ID) not in harness.zoms.calls
+# endDef
+
+
+async def test_upstream_status_unknown_event_not_found(harness: SimpleNamespace) -> None:
+
+    """
+    An unknown facade event id raises NotFoundError.
+    """
+
+    with pytest.raises(NotFoundError):
+        await harness.service.upstream_status(
+            "missing",
+            client_id=CLIENT_ID,
+            correlation_id="c-1",
+        )
     # endWith
 # endDef
 

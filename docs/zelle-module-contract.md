@@ -358,10 +358,12 @@ class ZomsClient:
     async def start(self, ews_event_id: str) -> list[str]
     async def complete(self, ews_event_id: str) -> list[str]
     async def cancel(self, ews_event_id: str) -> list[str]
+    async def get_status(self, ews_event_id: str) -> tuple[EwsEventStatusResponse, list[str]]
     # each returns the list of EWS request-ids used (one per attempt) for audit
 ```
 
-Behavior: URLs `{api_base_url}/v1/events/{schedule|start|complete|cancel}`.
+Behavior: URLs `{api_base_url}/v1/events/{schedule|start|complete|cancel}` and
+`GET {api_base_url}/v1/events/{maintenanceEventId}` for the status read.
 Headers per attempt: `Authorization: Bearer <broker.get()>`, `accept`,
 `content-type: application/json`, fresh `request-id: uuid4` per attempt;
 `idempotency-id` on schedule only (same value across retries). Response mapping:
@@ -375,6 +377,13 @@ Headers per attempt: `Authorization: Bearer <broker.get()>`, `accept`,
 | 5xx | retry (≤2 total attempts), then UpstreamUnavailableError | **UpstreamUncertainError** (response received; execution unknown) |
 | pre-send failure (ConnectError/ConnectTimeout) | retry (≤2), then UpstreamUnavailableError | UpstreamUnavailableError (safe: never sent) |
 | post-send failure (ReadTimeout/ReadError/WriteTimeout/RemoteProtocolError) | UpstreamUncertainError | UpstreamUncertainError |
+
+The status read (`get_status`) is side-effect free, so its matrix is simpler:
+401/429 as above; other 4xx → UpstreamRejectedError; ANY transport failure
+(pre- or post-send) or 5xx → transient retry (≤2 total attempts) then
+UpstreamUnavailableError. It never raises UpstreamUncertainError — a failed
+read changed nothing. The 200 body parses leniently (EwsEventStatusResponse;
+schema unconfirmed, vendor doc §3.5).
 
 Never log request/response bodies at the client (they carry PII + tokens);
 log method, URL, status, request-id, elapsed.
@@ -401,6 +410,10 @@ class EventService:
     async def list_events(self, status: EventStatus | None, *, correlation_id: str) -> EventListResponse
     async def resolve(self, event_id: str, request: ResolveRequest, *, client_id: str,
                       correlation_id: str) -> MaintenanceEventResponse
+    async def upstream_status(self, event_id: str, *, client_id: str,
+                              correlation_id: str) -> UpstreamStatusResponse
+    # ^ live southbound read: 404 unknown event, 409 when ews_event_id is None;
+    #   pure — no transition, no audit pair, no last_confirmed_upstream_at touch
     async def startup_sweep(self) -> int      # PENDING -> UNCERTAIN, returns count
 ```
 
@@ -505,6 +518,7 @@ async def require_client_id(request: Request, x_client_id: str | None = Header(N
 | `POST "/{event_id}/start"`, `"/complete"`, `"/cancel"` | header X-Confirm-Ticket (required) + X-Client-Id; query `dry_run: bool = False`; 200. |
 | `GET ""` | query `status: EventStatus | None`; 200 EventListResponse. |
 | `GET "/{event_id}"` | 200 MaintenanceEventResponse. |
+| `GET "/{event_id}/upstream-status"` | live southbound read; 200 UpstreamStatusResponse; 404 / 409 (no upstream id) / 502 / 503. |
 
 Every response sets `X-Correlation-Id`. Handlers are thin: resolve deps, call
 service, serialize. No business logic in routes.
@@ -528,6 +542,9 @@ service, serialize. No business logic in routes.
 - `POST .../start|complete|cancel`: enforce the real lifecycle (start only from
   SCHEDULED, complete only from IN_PROGRESS, cancel only from SCHEDULED);
   violations → 409-ish error; success → 200 `{"status": ...}`.
+- `GET /zoms/v1/events/{maintenanceEventId}`: headers as above minus
+  idempotency-id; unknown id → 404; success → 200
+  `{"maintenanceEventId": ..., "status": <current>}`.
 - Fault injection via header `x-fake-fault`: `"500"` → 500, `"429"` → 429 with
   `Retry-After: 1`, `"401"` → 401 (once per unique request-id, then behave),
   `"slow"` → `asyncio.sleep(15)`.

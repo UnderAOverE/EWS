@@ -458,4 +458,63 @@ async def test_host_style_wiring_serves_traffic(
 # endDef
 
 
+async def test_upstream_status_end_to_end(consumer: httpx.AsyncClient) -> None:
+
+    """
+    The live status read against the fake EWS: after schedule it reports SCHEDULED on both
+    sides; after start it tracks the upstream to IN_PROGRESS. Correlation id is echoed.
+    """
+
+    created = await consumer.post(
+        EVENTS_PATH,
+        json=_schedule_body(),
+        headers={"X-Client-Id": CLIENT_ID},
+    )
+    assert created.status_code == 201, created.text
+    event_id = created.json()["eventId"]
+    checked = await consumer.get(
+        f"{EVENTS_PATH}/{event_id}/upstream-status",
+        headers={"X-Client-Id": CLIENT_ID, "X-Correlation-Id": "c-live-1"},
+    )
+    assert checked.status_code == 200, checked.text
+    view = checked.json()
+    assert view["eventId"] == event_id
+    assert view["localStatus"] == "SCHEDULED"
+    assert view["upstreamStatus"] == "SCHEDULED"
+    assert view["correlationId"] == "c-live-1"
+    assert checked.headers["X-Correlation-Id"] == "c-live-1"
+    started = await consumer.post(
+        f"{EVENTS_PATH}/{event_id}/start",
+        headers={"X-Client-Id": CLIENT_ID, "X-Confirm-Ticket": TICKET},
+    )
+    assert started.status_code == 200, started.text
+    rechecked = await consumer.get(
+        f"{EVENTS_PATH}/{event_id}/upstream-status",
+        headers={"X-Client-Id": CLIENT_ID},
+    )
+    assert rechecked.status_code == 200, rechecked.text
+    assert rechecked.json()["localStatus"] == "IN_PROGRESS"
+    assert rechecked.json()["upstreamStatus"] == "IN_PROGRESS"
+# endDef
+
+
+async def test_upstream_status_unknown_event_is_404_envelope(
+    consumer: httpx.AsyncClient,
+    ) -> None:
+
+    """
+    The live status read for an unknown facade event id returns the 404 NOT_FOUND envelope.
+    """
+
+    response = await consumer.get(
+        f"{EVENTS_PATH}/does-not-exist/upstream-status",
+        headers={"X-Client-Id": CLIENT_ID},
+    )
+    assert response.status_code == 404
+    error = response.json()["error"]
+    assert error["code"] == "NOT_FOUND"
+    assert error["retryable"] is False
+# endDef
+
+
 # end_tests/unit/zelle/test_routes.py
