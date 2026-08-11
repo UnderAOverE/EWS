@@ -140,14 +140,25 @@ before start.
 
 ## 4. OAuth2 access token flow
 
-> ⚠️ The token endpoint URLs below come from a companion summary that cites **Paze**
-> (also operated by EWS) documentation — confirm with the EWS team that the same
-> auth server / audience applies to ZOMS, or get the ZOMS-specific values.
+> ✅ **Confirmed 2026-08-11** via the EWS "Obtaining RESTful Service Authorizations"
+> page (Early Warning Services Platform API OAuth Access User Guide v2.0) after a
+> support exchange. The previously transcribed `auth.wallet.*` URLs were **Paze's**
+> auth server — it answers `401 Unauthorized` to ZOMS clients.
 
-| Environment | Token endpoint |
-|---|---|
-| CAT | `https://auth.wallet.cat.earlywarning.io/token` |
-| PROD | `https://auth.wallet.earlywarning.com/token` |
+| Environment | Token endpoint | `aud` claim value |
+|---|---|---|
+| CAT | `https://auth.zelle.cat.earlywarning.io/token` | `https://auth-zelle.cat.earlywarning.io/oauth2/access/v1/token` |
+| PROD | `https://auth.zelle.earlywarning.com/token` | `https://auth-zelle.earlywarning.com/oauth2/access/v1/token` |
+
+The `aud` is a **fixed URL-shaped string, deliberately NOT the token endpoint** —
+note the `auth-zelle` host (with a dash) and the `/oauth2/access/v1/token` path.
+
+> ⚠️ Discrepancy to reconcile with EWS: their support email quoted the CAT endpoint
+> as `https://auth.zelle.cat.earlywarning.com/token` (`.com`, where the doc page says
+> `.io` for CAT) and quoted the **PROD** audience for a CAT test. The doc-page values
+> above are treated as authoritative (they are internally consistent: CAT=`.io`,
+> PROD=`.com`); if CAT still 401s with them, try the email's variants via
+> `ZELLE_TOKEN_URL` / `ZELLE_TOKEN_AUD` overrides and ask EWS to reconcile.
 
 `POST /token` (form-encoded):
 
@@ -172,7 +183,7 @@ Claims:
 |---|---|
 | `iss` | Your `client_id` (provided during onboarding) |
 | `sub` | Also your `client_id` |
-| `aud` | The authorization server URL (e.g. `https://auth.wallet.cat.earlywarning.io`) |
+| `aud` | The fixed audience string from the table above — NOT the auth server root or token endpoint |
 | `exp` | Expiration time (epoch seconds) |
 | `nbf` | Not before |
 | `iat` | Issued at |
@@ -202,8 +213,10 @@ and mutual TLS (mTLS).
 3. Does `idempotency-id` apply to `start`/`complete`/`cancel`, or only `schedule`?
 4. Must `request-id` be unique per attempt (i.e., new value on retry) while
    `idempotency-id` stays constant?
-5. Confirm the ZOMS auth server URL, `aud` value, and whether mTLS is required on the
-   token endpoint and/or the API endpoints (the URLs in §4 are from Paze docs).
+5. **Partially answered 2026-08-11** — the auth server URLs and `aud` values are
+   confirmed (see §4), modulo the `.com`/`.io` CAT discrepancy noted there. Still
+   open: whether mTLS is required on the token endpoint and/or the API endpoints,
+   and completion of our client registration (client_id, public key, kid).
 6. Rate limits / concurrency limits, and clock-skew tolerance on JWT claims.
 7. What the `schedule` response body contains (presumably `maintenanceEventId`) and
    whether scheduling constraints exist (lead time, max window length, overlap rules).

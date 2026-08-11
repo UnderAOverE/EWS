@@ -28,13 +28,15 @@ outside this doc — this covers the **zelle-specific** parts.
 |---|---|---|
 | `ZELLE_IS_PRODUCTION` | `false` → CAT URLs | `true` → PROD URLs |
 | Base URL (auto) | `https://api.zelle.cat.earlywarning.io/zoms` | `https://api.zelle.earlywarning.com/zoms` |
-| Token URL (auto) | `https://auth.wallet.cat.earlywarning.io/token` | `https://auth.wallet.earlywarning.com/token` |
+| Token URL (auto) | `https://auth.zelle.cat.earlywarning.io/token` | `https://auth.zelle.earlywarning.com/token` |
+| Token `aud` (auto) | `https://auth-zelle.cat.earlywarning.io/oauth2/access/v1/token` | `https://auth-zelle.earlywarning.com/oauth2/access/v1/token` |
 | Credentials | CAT `client_id` + `kid` registered with EWS | PROD `client_id` + `kid` |
 
-> **Confirm with EWS before CAT:** the token URLs above (and `token_aud`) are the
-> vendor doc's best-known values and flagged **unconfirmed** — override
-> `ZELLE_TOKEN_URL` / `ZELLE_TOKEN_AUD` if EWS gives you different ones. See the
-> open questions in [zoms-api-reference.md](zoms-api-reference.md).
+> Token URL and `aud` were **EWS-confirmed 2026-08-11** and derive automatically from
+> `ZELLE_IS_PRODUCTION` — the `aud` is a fixed string, deliberately not the token
+> endpoint. One CAT discrepancy between EWS's email and their doc page is recorded in
+> [zoms-api-reference.md §4](zoms-api-reference.md); if CAT 401s, try the email's
+> variants via `ZELLE_TOKEN_URL` / `ZELLE_TOKEN_AUD` overrides.
 
 ---
 
@@ -80,7 +82,7 @@ Set these in the CAT/PROD deployment environment. Everything except
 ZELLE_IS_PRODUCTION=true            # PROD; false for CAT
 
 # Auth / signing (real, registered with EWS)
-ZELLE_TOKEN_AUD=<EWS-confirmed audience>
+# ZELLE_TOKEN_AUD=<override only if EWS corrects the derived value — see §Environments>
 ZELLE_TOKEN_SCOPE=maintenance-event
 ZELLE_CLIENT_ID=<your client id>
 ZELLE_SIGNING_KID=<the kid EWS registered>

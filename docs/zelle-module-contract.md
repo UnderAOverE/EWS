@@ -81,7 +81,7 @@ class ZelleSettings(BaseSettings):
     environment: Literal["fake", "cat", "prod"] = "fake"
     api_base_url: str                     # e.g. https://api.zelle.cat.earlywarning.io/zoms
     token_url: str                        # e.g. https://auth.wallet.cat.earlywarning.io/token
-    token_aud: str                        # explicit config, never derived
+    token_aud: str                        # derived from is_production unless set (vendor §4)
     token_scope: str = "maintenance-event"
     client_id: SecretStr
     signing_kid: str                      # must match the JWKS entry registered with EWS

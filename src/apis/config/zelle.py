@@ -53,12 +53,17 @@ LOGGER = logging.getLogger(__name__)
 # Built-in ZOMS endpoints (docs/zoms-api-reference.md), selected by the ``is_production`` flag —
 # the host passes its IS_PRODUCTION_ENVIRONMENT — so non-prod resolves to CAT and prod to PROD
 # without hand-set URLs; an explicit value always overrides (that is how a local/fake deployment
-# points at its stub). NOTE: the token URLs are flagged unconfirmed in the vendor reference
-# (sourced from Paze docs) — override token_url once EWS confirms them. token_aud stays explicit.
+# points at its stub). Token endpoints + audiences are the EWS-confirmed values (2026-08-11,
+# EWS "Obtaining RESTful Service Authorizations" / Platform OAuth guide v2.0 — vendor doc §4);
+# the audience is a fixed URL-shaped string that is deliberately NOT the token endpoint. An EWS
+# support email quoted slightly different CAT values — the doc page wins here; vendor doc §4
+# records the discrepancy, and env overrides win if EWS reconciles differently.
 CAT_API_BASE_URL = "https://api.zelle.cat.earlywarning.io/zoms"
 PROD_API_BASE_URL = "https://api.zelle.earlywarning.com/zoms"
-CAT_TOKEN_URL = "https://auth.wallet.cat.earlywarning.io/token"
-PROD_TOKEN_URL = "https://auth.wallet.earlywarning.com/token"
+CAT_TOKEN_URL = "https://auth.zelle.cat.earlywarning.io/token"
+PROD_TOKEN_URL = "https://auth.zelle.earlywarning.com/token"
+CAT_TOKEN_AUD = "https://auth-zelle.cat.earlywarning.io/oauth2/access/v1/token"
+PROD_TOKEN_AUD = "https://auth-zelle.earlywarning.com/oauth2/access/v1/token"
 
 
 # ----------------------------------------------------------------------------------------------------#
@@ -86,8 +91,8 @@ class ZelleSettings(BaseSettings):
     is_production: bool = False
     api_base_url: str
     token_url: str
-    # Audience claim; explicit/required and never derived — the ZOMS auth server audience is
-    # unconfirmed (docs/zoms-api-reference.md).
+    # Audience claim for the client assertion — a fixed URL-shaped string that is NOT the token
+    # endpoint (vendor doc §4). Derived from is_production unless set explicitly.
     token_aud: str
     token_scope: str = "maintenance-event"
     client_id: SecretStr
@@ -142,9 +147,10 @@ class ZelleSettings(BaseSettings):
     def _default_endpoints(cls, data: Any) -> Any:
 
         """
-        Fill ``api_base_url`` and ``token_url`` from ``is_production`` when the caller did not set
-        them explicitly: production resolves to PROD, everything else to CAT. An explicit value
-        (env var or kwarg) always wins — that is how a local/fake deployment points at its stub.
+        Fill ``api_base_url``, ``token_url``, and ``token_aud`` from ``is_production`` when the
+        caller did not set them explicitly: production resolves to PROD, everything else to CAT.
+        An explicit value (env var or kwarg) always wins — that is how a local/fake deployment
+        points at its stub.
 
         :param data: The raw input mapping before field validation.
         :type data: Any
@@ -162,6 +168,9 @@ class ZelleSettings(BaseSettings):
             # endIf
             if not data.get("token_url"):
                 data["token_url"] = PROD_TOKEN_URL if is_production else CAT_TOKEN_URL
+            # endIf
+            if not data.get("token_aud"):
+                data["token_aud"] = PROD_TOKEN_AUD if is_production else CAT_TOKEN_AUD
             # endIf
         # endIf
         return data

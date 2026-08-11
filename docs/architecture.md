@@ -244,7 +244,7 @@ uv (locked builds) · FastAPI + pydantic v2 (mandated; typed DTO boundary) · ht
 
 ## 12. Open Questions for EWS (prioritized)
 
-1. **Auth:** exact CAT/PROD token URLs for scope `maintenance-event`, required `aud`, mTLS requirements + CA chain for token and API endpoints separately. *Blocks all connectivity; Paze URLs are a guess.*
+1. **Auth:** *partially answered 2026-08-11* — CAT/PROD token URLs and `aud` values are EWS-confirmed (see [zoms-api-reference.md §4](zoms-api-reference.md), incl. one CAT discrepancy to reconcile). Still open: mTLS requirements + CA chain for token and API endpoints separately, and completion of client registration (client_id, public key, kid).
 2. **Schedule 201 body:** full schema — is `maintenanceEventId` returned synchronously, under what key? *Determines whether our 202/`PENDING_UPSTREAM_ID` fallback is ever exercised.*
 3. **Idempotency semantics:** honored on start/complete/cancel? Schedule-key replay with a different body? Replay after client crash — original 201 echoed or duplicate error? *Gates any relaxation of the no-retry stance and the startup sweep.*
 4. **Error catalog + body shape:** especially double-start, complete-without-start, cancel-after-start, idempotency replay — retryable vs terminal vs already-converged. *Gates enabling the pending_complete driver.*

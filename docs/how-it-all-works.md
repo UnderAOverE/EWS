@@ -374,8 +374,8 @@ can also pass them in directly). The important ones:
 |---|---|
 | `ZELLE_IS_PRODUCTION` | Prod flag. **Selects CAT vs PROD URLs for you** — `false`→CAT, `true`→PROD. With module-level settings, set this from your host's `IS_PRODUCTION_ENVIRONMENT` in the deployment env (or inject `ZelleSettings(is_production=IS_PRODUCTION_ENVIRONMENT)` into `get_service` to pass the flag directly). |
 | `ZELLE_API_BASE_URL` | ZOMS base URL. **Optional** — auto-derived from `ZELLE_IS_PRODUCTION`; set it only to override (that's how a local/fake deployment points at its stub). |
-| `ZELLE_TOKEN_URL` | EWS auth server token endpoint. **Optional** — auto-derived from `ZELLE_IS_PRODUCTION` too; override once EWS confirms it (the vendor doc flags the token URL as unconfirmed). |
-| `ZELLE_TOKEN_AUD` / `ZELLE_TOKEN_SCOPE` | Audience and scope for the token. Audience is **explicit/required** (not derived — unconfirmed). |
+| `ZELLE_TOKEN_URL` | EWS auth server token endpoint. **Optional** — auto-derived from `ZELLE_IS_PRODUCTION` (EWS-confirmed 2026-08-11, vendor doc §4); override only to point at a stub or if EWS corrects it. |
+| `ZELLE_TOKEN_AUD` / `ZELLE_TOKEN_SCOPE` | Audience and scope for the token. **Optional** — audience also auto-derives from `ZELLE_IS_PRODUCTION`; it is a fixed URL-shaped string, deliberately NOT the token endpoint (vendor doc §4). |
 | `ZELLE_CLIENT_ID` | Our client identity (secret) |
 | `ZELLE_SIGNING_KID` | Key id EWS has registered for us |
 | `ZELLE_SIGNING_KEY_PATH` | Path to the RS256 **private key** on disk (never in git, never in env) |
