@@ -31,6 +31,12 @@ EWS connectivity smoke test.
 Usage (env configured exactly like the facade — the ``ZELLE_*`` variables)::
 
     python -m src.tools.ews_status_smoke <maintenanceEventId>
+    python -m src.tools.ews_status_smoke --dump-assertion
+
+``--dump-assertion`` prints one freshly signed client assertion plus its decoded header and
+claims — the artifact EWS support asks for when they offer to "decode your assertion." It is
+safe to share with EWS: it contains no key material and expires within minutes. Without a
+maintenanceEventId the tool exits after dumping; with one it dumps and then runs the smoke.
 
 Exit codes:
 
@@ -54,6 +60,8 @@ sys.dont_write_bytecode = True
 
 import argparse
 import asyncio
+import base64
+import json
 import logging
 
 # Internal imports
@@ -94,13 +102,19 @@ async def run_smoke(maintenance_event_id: str) -> int:
     """
 
     settings = get_zelle_settings()
+    # The full non-secret request context, so the log line is shareable with EWS support as-is.
+    # client_id stays out (SecretStr) — it is visible in the --dump-assertion claims instead.
     logger.info(
-        "smoke: is_production=%s api_base_url=%s token_url=%s kid=%s mtls=%s",
+        "smoke: is_production=%s api_base_url=%s token_url=%s token_aud=%s scope=%s kid=%s "
+        "mtls=%s proxy_configured=%s",
         settings.is_production,
         settings.api_base_url,
         settings.token_url,
+        settings.token_aud,
+        settings.token_scope,
         settings.signing_kid,
         settings.client_certificate_path is not None,
+        settings.proxy_url is not None,
     )
     # Reuse the exact production TLS/mTLS client construction — the point of the smoke test is
     # to exercise the same path the facade will use, not an approximation of it.
@@ -147,6 +161,52 @@ async def run_smoke(maintenance_event_id: str) -> int:
 # endDef
 
 
+def _b64url_decode(segment: str) -> bytes:
+
+    """
+    Decode one base64url JWT segment, restoring stripped padding.
+
+    :param segment: The base64url-encoded segment.
+    :type segment: str
+    :return: The decoded bytes.
+    :rtype: bytes
+    """
+
+    return base64.urlsafe_b64decode(segment + "=" * (-len(segment) % 4))
+# endDef
+
+
+async def dump_assertion() -> int:
+
+    """
+    Sign one fresh client assertion and log it with its decoded header and claims — the
+    artifact EWS support decodes to say which claim they reject. No network call is made.
+
+    :return: The process exit code (always success).
+    :rtype: int
+    """
+
+    settings = get_zelle_settings()
+    client = _build_http_client(settings)
+    try:
+        broker = TokenBroker(settings, client)
+        # Private-method access is deliberate: the broker owns assertion signing, and this
+        # diagnostic must emit EXACTLY what the broker would send, not a reimplementation.
+        assertion = broker._build_assertion()
+    finally:
+        await client.aclose()
+    # endTryFinally
+    header, claims, _signature = assertion.split(".")
+    logger.info(
+        "client assertion (safe to share with EWS: no key material, expires in minutes):",
+    )
+    logger.info("%s", assertion)
+    logger.info("decoded header: %s", json.dumps(json.loads(_b64url_decode(header))))
+    logger.info("decoded claims: %s", json.dumps(json.loads(_b64url_decode(claims))))
+    return EXIT_SUCCESS
+# endDef
+
+
 def main() -> int:
 
     """
@@ -165,12 +225,29 @@ def main() -> int:
     )
     parser.add_argument(
         "maintenance_event_id",
+        nargs="?",
+        default=None,
         help="The EWS maintenanceEventId to look up (from EWS, not a facade eventId).",
     )
+    parser.add_argument(
+        "--dump-assertion",
+        action="store_true",
+        help="Sign and print one client assertion with decoded claims (to share with EWS "
+        "support); exits after dumping unless a maintenanceEventId is also given.",
+    )
     arguments = parser.parse_args()
+    if arguments.maintenance_event_id is None and not arguments.dump_assertion:
+        parser.error("provide a maintenanceEventId, --dump-assertion, or both")
+    # endIf
     # A standalone process has no host logging config, so the shared logger would swallow the
     # INFO-level verdict — give it a console handler here (host processes never run this).
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    if arguments.dump_assertion:
+        dump_code = asyncio.run(dump_assertion())
+        if arguments.maintenance_event_id is None:
+            return dump_code
+        # endIf
+    # endIf
     return asyncio.run(run_smoke(arguments.maintenance_event_id))
 # endDef
 

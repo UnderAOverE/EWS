@@ -102,6 +102,36 @@ def parse_retry_after(response: httpx.Response) -> float:
 # endDef
 
 
+def parse_oauth_error(response: httpx.Response) -> tuple[str | None, str | None]:
+
+    """
+    Leniently extract the RFC 6749 §5.2 ``error`` / ``error_description`` fields from a token
+    endpoint 4xx body. Only these two diagnostic fields are ever surfaced (length-capped) —
+    never the raw body — and they contain no tokens or key material by construction.
+
+    :param response: The token endpoint 4xx response.
+    :type response: httpx.Response
+    :return: The (error, error_description) pair; None where absent or unparseable.
+    :rtype: tuple[str | None, str | None]
+    """
+
+    try:
+        data = response.json()
+    except ValueError:
+        return None, None
+    # endTryExcept
+    if not isinstance(data, dict):
+        return None, None
+    # endIf
+    error = data.get("error")
+    description = data.get("error_description")
+    return (
+        str(error)[:64] if error is not None else None,
+        str(description)[:300] if description is not None else None,
+    )
+# endDef
+
+
 class CircuitBreaker:
 
     """
@@ -393,6 +423,20 @@ class TokenBroker:
             if status in (400, 401):
                 # Key/config incident: never retried and deliberately NOT fed to the breaker —
                 # AuthConfigError must keep alerting on its own channel, not mutate into 503s.
+                # The OAuth error code + the non-secret request context are logged southbound
+                # for ops/vendor triage; the northbound message stays vendor-detail-free.
+                oauth_error, oauth_description = parse_oauth_error(response)
+                logger.warning(
+                    "token endpoint rejected the assertion: http=%s oauth_error=%s "
+                    "description=%s | request context: token_url=%s aud=%s scope=%s kid=%s",
+                    status,
+                    oauth_error,
+                    oauth_description,
+                    self._settings.token_url,
+                    self._settings.token_aud,
+                    self._settings.token_scope,
+                    self._settings.signing_kid,
+                )
                 raise AuthConfigError(
                     "EWS token endpoint rejected the client assertion; "
                     "check client registration, kid, and signing key.",

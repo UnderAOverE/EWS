@@ -261,6 +261,42 @@ async def test_no_retry_on_auth_config_status(
 
 
 @respx.mock
+async def test_auth_reject_logs_oauth_error_but_never_the_assertion(
+    settings: ZelleSettings,
+    client: httpx.AsyncClient,
+    caplog: pytest.LogCaptureFixture,
+    ) -> None:
+
+    """
+    A 400 with an RFC 6749 error body logs the ``error``/``error_description`` diagnostics and
+    the non-secret request context (token_url, aud, scope, kid) — while the client assertion
+    itself still never reaches the logs.
+    """
+
+    route = respx.post(TOKEN_URL).mock(
+        return_value=httpx.Response(
+            400,
+            json={"error": "invalid_client", "error_description": "unknown client or key"},
+        ),
+    )
+    broker = TokenBroker(settings, client)
+    with caplog.at_level(logging.DEBUG):
+        with pytest.raises(AuthConfigError):
+            await broker.get()
+        # endWith
+    # endWith
+    assert "invalid_client" in caplog.text
+    assert "unknown client or key" in caplog.text
+    assert settings.token_aud in caplog.text
+    assert settings.signing_kid in caplog.text
+    sent_assertion = urllib.parse.parse_qs(
+        route.calls[0].request.read().decode("utf-8"),
+    )["client_assertion"][0]
+    assert sent_assertion not in caplog.text
+# endDef
+
+
+@respx.mock
 async def test_429_honored_once_with_fresh_jti(
     settings: ZelleSettings,
     client: httpx.AsyncClient,
