@@ -182,6 +182,36 @@ class UpstreamStatusResponse(BaseModel):
 # endClass
 
 
+class QueueDepthEntry(BaseModel):
+
+    """
+    Consumer view of one held-notification queue: its name and the number of messages EWS is
+    currently holding in it.
+    """
+
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
+    name: str
+    count: int
+# endClass
+
+
+class QueueDepthsResponse(BaseModel):
+
+    """
+    Consumer view of a live queue-depth check — how many notifications EWS is holding for the
+    org, by queue, at the instant of ``checked_at``. Callable with or without an active
+    maintenance event; nothing is persisted.
+    """
+
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
+    queue_depths: list[QueueDepthEntry]
+    checked_at: datetime
+    correlation_id: str
+# endClass
+
+
 class ResolveRequest(BaseModel):
 
     """

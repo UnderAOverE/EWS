@@ -66,6 +66,8 @@ from src.apis.models.zelle.errors import (
 from src.apis.models.zelle.northbound import (
     EventListResponse,
     MaintenanceEventResponse,
+    QueueDepthEntry,
+    QueueDepthsResponse,
     ResolveRequest,
     ScheduleEventRequest,
     UpstreamStatusResponse,
@@ -710,6 +712,42 @@ class EventService:
             event_id=event.event_id,
             local_status=event.status,
             upstream_status=upstream,
+            checked_at=datetime.now(timezone.utc),
+            correlation_id=correlation_id,
+        )
+    # endDef
+
+    async def queue_depths(
+        self,
+        *,
+        client_id: str,
+        correlation_id: str,
+        ) -> QueueDepthsResponse:
+
+        """
+        Read the org's live held-notification counts by queue (vendor §3.6) — a pure
+        southbound read, callable with or without an active maintenance event. Like
+        :meth:`upstream_status` it is deliberately pure: no state transition, no
+        INTENT/OUTCOME audit pair, nothing persisted. Entries the upstream returns without a
+        usable name or count are dropped rather than surfaced half-formed.
+
+        :param client_id: Attributed caller identity from ``X-Client-Id``.
+        :type client_id: str
+        :param correlation_id: Correlation id bound to this request.
+        :type correlation_id: str
+        :return: The live queue-depth view.
+        :rtype: QueueDepthsResponse
+        """
+
+        logger.info("queue depth check: client_id=%s", client_id)
+        entries, _request_ids = await self._zoms.get_queue_depths()
+        depths = [
+            QueueDepthEntry(name=entry.name, count=entry.count)
+            for entry in entries
+            if entry.name is not None and entry.count is not None
+        ]
+        return QueueDepthsResponse(
+            queue_depths=depths,
             checked_at=datetime.now(timezone.utc),
             correlation_id=correlation_id,
         )

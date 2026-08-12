@@ -184,6 +184,21 @@ upstream reported, upper-cased; may be `null` if it omitted one), `checkedAt`, `
 (e.g. `PENDING_UPSTREAM_ID`) · `502` / `503` upstream problem.
 """
 
+_QUEUE_DEPTHS_DESCRIPTION = """
+Read the **live held-notification counts** for your organisation, by queue. This **does** call EWS
+synchronously (vendor count API) and reports how many notifications EWS is currently holding —
+useful to verify holds are accumulating during a window and drained after completion. Callable
+whether or not a maintenance event is in progress; nothing is persisted.
+
+**Headers**
+- `X-Client-Id` **(required)** — caller identity.
+- `X-Correlation-Id` *(optional)* — trace id; minted if omitted.
+
+**Response body**: `queueDepths` (array of `{name, count}`), `checkedAt`, `correlationId`.
+
+**Responses**: `200` live view · `502` / `503` upstream problem.
+"""
+
 
 # ----------------------------------------------------------------------------------------------------#
 # Classes or functions.                                                                               #
@@ -478,6 +493,47 @@ async def list_events(
     return JSONResponse(
         status_code=HTTPCodes.HTTP_SUCCESS,
         content=envelope.model_dump(mode="json", by_alias=True),
+        headers={"X-Correlation-Id": correlation_id},
+    )
+# endDef
+
+
+# Registered BEFORE the dynamic "/{event_id}" route — Starlette matches routes in registration
+# order, so the literal path must come first or "queue-depths" would be read as an event id.
+@events_router.get(
+    "/queue-depths",
+    summary="Get the org's live held-notification counts (calls EWS)",
+    response_description="The live queue-depth view.",
+    description=_QUEUE_DEPTHS_DESCRIPTION,
+)
+async def get_queue_depths(
+    correlation_id: ZelleCorrelationIdDependency,
+    client_id: ZelleClientIdDependency,
+    service: ZelleEventServiceDependency,
+    ) -> JSONResponse:
+
+    """
+    Read the org's live held-notification counts by queue (200) — a real southbound read;
+    no state change.
+
+    :param correlation_id: Correlation id bound to this request.
+    :type correlation_id: str
+    :param client_id: Attributed caller identity.
+    :type client_id: str
+    :param service: The event orchestration service.
+    :type service: EventService
+    :return: The live queue-depth view.
+    :rtype: JSONResponse
+    """
+
+    logger.debug("queue depths client_id=%s", client_id)
+    response = await service.queue_depths(
+        client_id=client_id,
+        correlation_id=correlation_id,
+    )
+    return JSONResponse(
+        status_code=HTTPCodes.HTTP_SUCCESS,
+        content=response.model_dump(mode="json", by_alias=True),
         headers={"X-Correlation-Id": correlation_id},
     )
 # endDef

@@ -178,4 +178,20 @@ class EwsEventStatusResponse(BaseModel):
 # endClass
 
 
+class EwsQueueDepth(BaseModel):
+
+    """
+    LENIENT parse of one entry of the count read's ``queueDepths`` array
+    (``GET /v1/count?orgId={orgId}``, vendor spec pp. 56-57): the queue ``name`` and the
+    ``count`` of notifications currently held in it. Unknown fields are retained via
+    ``extra="allow"`` and both fields may be absent.
+    """
+
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="allow")
+
+    name: str | None = None
+    count: int | None = None
+# endClass
+
+
 # end_apis/models/zelle/southbound.py

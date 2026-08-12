@@ -58,6 +58,7 @@ from src.apis.models.zelle.errors import (
 from src.apis.models.zelle.southbound import (
     EwsEventStatusResponse,
     EwsLifecycleRequest,
+    EwsQueueDepth,
     EwsScheduleRequest,
     EwsScheduleResponse,
 )
@@ -304,6 +305,26 @@ class ZomsClient:
         query = urlencode({"orgId": self._settings.org_id})
         response, request_ids = await self._get(f"/v1/events?{query}")
         return self._parse_events_list(response), request_ids
+    # endDef
+
+    async def get_queue_depths(self) -> tuple[list[EwsQueueDepth], list[str]]:
+
+        """
+        Read the org's held-notification counts by queue (``GET /v1/count?orgId={orgId}``,
+        vendor spec pp. 56-57). Callable whether or not a maintenance event is in progress;
+        a pure read under the same retry matrix as the events list.
+
+        :return: The parsed queue-depth entries and the request-ids used.
+        :rtype: tuple[list[EwsQueueDepth], list[str]]
+        :raises UpstreamUnavailableError: After exhausted transient retries (connect/read/5xx).
+        :raises RateLimitedError: On a second 429 after the single honored Retry-After.
+        :raises UpstreamRejectedError: On a definite EWS 4xx rejection.
+        :raises AuthConfigError: When two consecutive tokens are rejected.
+        """
+
+        query = urlencode({"orgId": self._settings.org_id})
+        response, request_ids = await self._get(f"/v1/count?{query}")
+        return self._parse_queue_depths(response), request_ids
     # endDef
 
     async def _lifecycle(
@@ -659,6 +680,44 @@ class ZomsClient:
                 parsed.append(EwsEventStatusResponse.model_validate(entry))
             except ValidationError:
                 logger.warning("skipping an unparseable maintenanceEvents entry")
+            # endTryExcept
+        # endFor
+        return parsed
+    # endDef
+
+    def _parse_queue_depths(self, response: httpx.Response) -> list[EwsQueueDepth]:
+
+        """
+        Parse the count-read 200 body (``{"queueDepths": [...]}``) leniently: an unparseable
+        body degrades to an empty list and an unparseable entry is skipped — the vendor's
+        success must not become a facade failure.
+
+        :param response: The 2xx count response.
+        :type response: httpx.Response
+        :return: The parsed queue-depth entries.
+        :rtype: list[EwsQueueDepth]
+        """
+
+        try:
+            data = response.json()
+        except ValueError:
+            logger.warning("queue-depth body was not JSON; treating the list as empty")
+            return []
+        # endTryExcept
+        entries = data.get("queueDepths") if isinstance(data, dict) else None
+        if not isinstance(entries, list):
+            logger.warning(
+                "queue-depth body had no queueDepths array; masked body=%s",
+                _mask_body_for_log(response.text),
+            )
+            return []
+        # endIf
+        parsed: list[EwsQueueDepth] = []
+        for entry in entries:
+            try:
+                parsed.append(EwsQueueDepth.model_validate(entry))
+            except ValidationError:
+                logger.warning("skipping an unparseable queueDepths entry")
             # endTryExcept
         # endFor
         return parsed

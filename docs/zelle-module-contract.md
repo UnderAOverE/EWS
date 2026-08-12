@@ -363,6 +363,7 @@ class ZomsClient:
     async def cancel(self, ews_event_id: str) -> list[str]
     async def get_status(self, ews_event_id: str) -> tuple[EwsEventStatusResponse, list[str]]
     async def list_events(self) -> tuple[list[EwsEventStatusResponse], list[str]]
+    async def get_queue_depths(self) -> tuple[list[EwsQueueDepth], list[str]]
     # each returns the list of EWS request-ids used (one per attempt) for audit
 ```
 
@@ -422,6 +423,9 @@ class EventService:
                               correlation_id: str) -> UpstreamStatusResponse
     # ^ live southbound read: 404 unknown event, 409 when ews_event_id is None;
     #   pure — no transition, no audit pair, no last_confirmed_upstream_at touch
+    async def queue_depths(self, *, client_id: str,
+                           correlation_id: str) -> QueueDepthsResponse
+    # ^ live southbound count read (vendor §3.6): org-level, event-independent, pure
     async def startup_sweep(self) -> int      # PENDING -> UNCERTAIN, returns count
 ```
 
@@ -525,6 +529,7 @@ async def require_client_id(request: Request, x_client_id: str | None = Header(N
 | `POST ""` | headers: X-Client-Id (required), Idempotency-Key (optional), X-Correlation-Id (optional). Returns JSONResponse with `result.status_code`; body `MaintenanceEventResponse` by_alias. |
 | `POST "/{event_id}/start"`, `"/complete"`, `"/cancel"` | header X-Confirm-Ticket (required) + X-Client-Id; query `dry_run: bool = False`; 200. |
 | `GET ""` | query `status: EventStatus | None`; 200 EventListResponse. |
+| `GET "/queue-depths"` | live southbound count read; 200 QueueDepthsResponse; 502 / 503. Registered BEFORE `/{event_id}` (literal beats param only by registration order). |
 | `GET "/{event_id}"` | 200 MaintenanceEventResponse. |
 | `GET "/{event_id}/upstream-status"` | live southbound read; 200 UpstreamStatusResponse; 404 / 409 (no upstream id) / 502 / 503. |
 
@@ -555,6 +560,8 @@ service, serialize. No business logic in routes.
   envelope.
 - `GET /zoms/v1/events?orgId=...`: headers as above minus idempotency-id; missing
   orgId → 400; success → 200 `{"maintenanceEvents": [...]}` filtered to the org.
+- `GET /zoms/v1/count?orgId=...`: headers as above minus idempotency-id; missing
+  orgId → 400; success → 200 with a fixed `{"queueDepths": [...]}` sample.
 - Fault injection via header `x-fake-fault`: `"500"` → 500, `"429"` → 429 with
   `Retry-After: 1`, `"401"` → 401 (once per unique request-id, then behave),
   `"slow"` → `asyncio.sleep(15)`.

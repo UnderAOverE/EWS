@@ -65,6 +65,7 @@ START_URL = "http://fake-ews/zoms/v1/events/start"
 EWS_EVENT_ID = "f879562c-b912-44e9-a592-71d3aef09afb"
 # The read is the org-scoped list (no per-id GET exists upstream); org BBO per conftest.
 LIST_URL = "http://fake-ews/zoms/v1/events?orgId=BBO"
+COUNT_URL = "http://fake-ews/zoms/v1/count?orgId=BBO"
 # The confirmed 201 shape wraps the event in the vendor's maintenanceEvent envelope.
 SCHEDULE_201 = {
     "maintenanceEvent": {"maintenanceEventId": EWS_EVENT_ID, "status": "NOT_STARTED"},
@@ -527,6 +528,52 @@ async def test_get_status_post_send_failure_is_retried(zoms: ZomsClient) -> None
     parsed, request_ids = await zoms.get_status(EWS_EVENT_ID)
     assert parsed.status == "NOT_STARTED"
     assert len(request_ids) == 2
+# endDef
+
+
+@respx.mock
+async def test_get_queue_depths_happy_path(zoms: ZomsClient) -> None:
+
+    """
+    The count read hits the org-scoped count URL with the standard read headers and parses
+    the ``queueDepths`` array leniently.
+    """
+
+    route = respx.get(COUNT_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "queueDepths": [
+                    {"name": "rejected-payment", "count": 1594},
+                    {"name": "create-payment-request", "count": 0},
+                ],
+            },
+        ),
+    )
+    entries, request_ids = await zoms.get_queue_depths()
+    assert [(entry.name, entry.count) for entry in entries] == [
+        ("rejected-payment", 1594),
+        ("create-payment-request", 0),
+    ]
+    assert route.call_count == 1
+    request = route.calls[0].request
+    assert request.headers["Authorization"] == "Bearer tok-1"
+    assert request.headers["request-id"] == request_ids[0]
+    assert "idempotency-id" not in request.headers
+# endDef
+
+
+@respx.mock
+async def test_get_queue_depths_unexpected_shape_is_empty(zoms: ZomsClient) -> None:
+
+    """
+    A count 200 without the ``queueDepths`` array degrades to an empty list — the vendor's
+    success never becomes a facade failure.
+    """
+
+    respx.get(COUNT_URL).mock(return_value=httpx.Response(200, json={"unexpected": True}))
+    entries, _request_ids = await zoms.get_queue_depths()
+    assert entries == []
 # endDef
 
 

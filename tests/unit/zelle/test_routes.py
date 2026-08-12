@@ -499,6 +499,29 @@ async def test_upstream_status_end_to_end(consumer: httpx.AsyncClient) -> None:
 # endDef
 
 
+async def test_queue_depths_end_to_end(consumer: httpx.AsyncClient) -> None:
+
+    """
+    The live queue-depth read against the fake EWS: 200 with the fake's fixed queueDepths
+    sample, and the correlation id echoed. The literal path must not be shadowed by the
+    ``/{event_id}`` route.
+    """
+
+    response = await consumer.get(
+        f"{EVENTS_PATH}/queue-depths",
+        headers={"X-Client-Id": CLIENT_ID, "X-Correlation-Id": "c-depth-1"},
+    )
+    assert response.status_code == 200, response.text
+    view = response.json()
+    assert view["queueDepths"] == [
+        {"name": "rejected-payment", "count": 3},
+        {"name": "create-payment-request", "count": 7},
+    ]
+    assert view["correlationId"] == "c-depth-1"
+    assert response.headers["X-Correlation-Id"] == "c-depth-1"
+# endDef
+
+
 async def test_upstream_status_unknown_event_is_404_envelope(
     consumer: httpx.AsyncClient,
     ) -> None:

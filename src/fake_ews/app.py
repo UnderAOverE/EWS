@@ -414,6 +414,44 @@ def create_fake_ews_app() -> FastAPI:
         return JSONResponse(status_code=200, content={"maintenanceEvents": events})
     # endDef
 
+    @app.get("/zoms/v1/count")
+    async def count_for_org(request: Request) -> JSONResponse:
+
+        """
+        Fake count read (``GET /v1/count?orgId={orgId}``, spec pp. 56-57): enforce headers and
+        return a fixed sample of held-notification queue depths.
+
+        :param request: The incoming request.
+        :type request: Request
+        :return: 200 with ``queueDepths``, or 401/400 on failure.
+        :rtype: JSONResponse
+        """
+
+        fault = await _maybe_fault(request)
+        if fault is not None:
+            return fault
+        # endIf
+        header_error = _missing_zoms_headers(request, require_idempotency=False)
+        if header_error is not None:
+            return header_error
+        # endIf
+        if not request.query_params.get("orgId"):
+            return JSONResponse(
+                status_code=400,
+                content={"error": "orgId query parameter is required"},
+            )
+        # endIf
+        return JSONResponse(
+            status_code=200,
+            content={
+                "queueDepths": [
+                    {"name": "rejected-payment", "count": 3},
+                    {"name": "create-payment-request", "count": 7},
+                ],
+            },
+        )
+    # endDef
+
     return app
 # endDef
 
