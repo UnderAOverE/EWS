@@ -63,8 +63,12 @@ LOGGER = logging.getLogger(__name__)
 SCHEDULE_URL = "http://fake-ews/zoms/v1/events/schedule"
 START_URL = "http://fake-ews/zoms/v1/events/start"
 EWS_EVENT_ID = "f879562c-b912-44e9-a592-71d3aef09afb"
-STATUS_URL = f"http://fake-ews/zoms/v1/events/{EWS_EVENT_ID}"
-SCHEDULE_201 = {"maintenanceEventId": EWS_EVENT_ID, "status": "SCHEDULED"}
+# The read is the org-scoped list (no per-id GET exists upstream); org BBO per conftest.
+LIST_URL = "http://fake-ews/zoms/v1/events?orgId=BBO"
+# The confirmed 201 shape wraps the event in the vendor's maintenanceEvent envelope.
+SCHEDULE_201 = {
+    "maintenanceEvent": {"maintenanceEventId": EWS_EVENT_ID, "status": "NOT_STARTED"},
+}
 
 
 # ----------------------------------------------------------------------------------------------------#
@@ -416,14 +420,20 @@ async def test_no_token_or_body_in_logs(
 async def test_get_status_happy_path_headers(zoms: ZomsClient) -> None:
 
     """
-    The status read hits the exact GET URL with bearer token, accept/content-type, a request-id
-    matching the returned audit list, and NO idempotency-id; the 200 body parses leniently.
+    The status read hits the org-scoped list URL with bearer token, accept/content-type, a
+    request-id matching the returned audit list, and NO idempotency-id; the matching
+    ``maintenanceEvents`` entry parses leniently.
     """
 
-    route = respx.get(STATUS_URL).mock(
+    route = respx.get(LIST_URL).mock(
         return_value=httpx.Response(
             200,
-            json={"maintenanceEventId": EWS_EVENT_ID, "status": "IN_PROGRESS"},
+            json={
+                "maintenanceEvents": [
+                    {"maintenanceEventId": str(uuid.uuid4()), "status": "COMPLETE"},
+                    {"maintenanceEventId": EWS_EVENT_ID, "status": "IN_PROGRESS"},
+                ],
+            },
         ),
     )
     parsed, request_ids = await zoms.get_status(EWS_EVENT_ID)
@@ -440,14 +450,34 @@ async def test_get_status_happy_path_headers(zoms: ZomsClient) -> None:
 
 
 @respx.mock
+async def test_get_status_absent_from_list_is_rejected(zoms: ZomsClient) -> None:
+
+    """
+    A 200 list that does not contain the requested id maps to UpstreamRejectedError — same
+    semantic as the unknown-id rejection, surfaced as a facade-owned 502.
+    """
+
+    route = respx.get(LIST_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={"maintenanceEvents": [{"maintenanceEventId": str(uuid.uuid4())}]},
+        ),
+    )
+    with pytest.raises(UpstreamRejectedError):
+        await zoms.get_status(EWS_EVENT_ID)
+    # endWith
+    assert route.call_count == 1
+# endDef
+
+
+@respx.mock
 async def test_get_status_4xx_maps_to_rejected(zoms: ZomsClient) -> None:
 
     """
-    A definite 4xx on the status read (e.g. unknown id -> 404) maps to UpstreamRejectedError
-    with no retry.
+    A definite 4xx on the list read maps to UpstreamRejectedError with no retry.
     """
 
-    route = respx.get(STATUS_URL).mock(return_value=httpx.Response(404, json={"error": "x"}))
+    route = respx.get(LIST_URL).mock(return_value=httpx.Response(404, json={"error": "x"}))
     with pytest.raises(UpstreamRejectedError):
         await zoms.get_status(EWS_EVENT_ID)
     # endWith
@@ -459,11 +489,11 @@ async def test_get_status_4xx_maps_to_rejected(zoms: ZomsClient) -> None:
 async def test_get_status_5xx_retries_then_unavailable(zoms: ZomsClient) -> None:
 
     """
-    A 5xx on the status read is plainly transient (reads are side-effect free): it retries with
+    A 5xx on the list read is plainly transient (reads are side-effect free): it retries with
     a fresh request-id, then maps to UpstreamUnavailableError — never UNCERTAIN.
     """
 
-    route = respx.get(STATUS_URL).mock(return_value=httpx.Response(503, json={"error": "x"}))
+    route = respx.get(LIST_URL).mock(return_value=httpx.Response(503, json={"error": "x"}))
     with pytest.raises(UpstreamUnavailableError):
         await zoms.get_status(EWS_EVENT_ID)
     # endWith
@@ -478,18 +508,57 @@ async def test_get_status_5xx_retries_then_unavailable(zoms: ZomsClient) -> None
 async def test_get_status_post_send_failure_is_retried(zoms: ZomsClient) -> None:
 
     """
-    A post-send failure (read timeout) on the status read retries and succeeds — the read
+    A post-send failure (read timeout) on the list read retries and succeeds — the read
     deliberately inverts the lifecycle POST rule, where the same failure is UNCERTAIN.
     """
 
-    route = respx.get(STATUS_URL)
+    route = respx.get(LIST_URL)
     route.side_effect = [
         httpx.ReadTimeout("boom"),
-        httpx.Response(200, json={"maintenanceEventId": EWS_EVENT_ID, "status": "SCHEDULED"}),
+        httpx.Response(
+            200,
+            json={
+                "maintenanceEvents": [
+                    {"maintenanceEventId": EWS_EVENT_ID, "status": "NOT_STARTED"},
+                ],
+            },
+        ),
     ]
     parsed, request_ids = await zoms.get_status(EWS_EVENT_ID)
-    assert parsed.status == "SCHEDULED"
+    assert parsed.status == "NOT_STARTED"
     assert len(request_ids) == 2
+# endDef
+
+
+@respx.mock
+async def test_4xx_error_body_is_logged_masked(
+    zoms: ZomsClient,
+    payload: EwsScheduleRequest,
+    caplog: pytest.LogCaptureFixture,
+    ) -> None:
+
+    """
+    A 4xx rejection logs the EWS error body masked and truncated: email addresses and long
+    digit runs never reach the logs, while the vendor's stated reason does.
+    """
+
+    respx.post(SCHEDULE_URL).mock(
+        return_value=httpx.Response(
+            400,
+            json={
+                "error": "scheduling conflict",
+                "contact": "TTechnology@BBO.com 9999999977",
+            },
+        ),
+    )
+    with caplog.at_level(logging.WARNING):
+        with pytest.raises(UpstreamRejectedError):
+            await zoms.schedule(payload, str(uuid.uuid4()))
+        # endWith
+    # endWith
+    assert "scheduling conflict" in caplog.text
+    assert "TTechnology@BBO.com" not in caplog.text
+    assert "9999999977" not in caplog.text
 # endDef
 
 

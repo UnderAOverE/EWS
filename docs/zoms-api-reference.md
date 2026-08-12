@@ -39,6 +39,10 @@ All operations use OAuth scope **`maintenance-event`**.
 - Success: `201 Created`
 - Additional header: `idempotency-id` (required) — client-generated UUID to prevent duplicate request processing
 
+> ✅ **Response shape + scheduling rules confirmed 2026-08-12** from photographed pages of the
+> full vendor spec *"Zelle Org Maintenance Self-Care Tech Specs and Use Cases July 2026.pdf"*
+> (TR-CIS-ZELLE-0003, 78 pp.) — pp. 21, 59–61. See the response sample and rules below.
+
 Request body:
 
 | Field | Type | Length | Required | Description | Example |
@@ -75,6 +79,51 @@ Sample payload:
 }
 ```
 
+#### Schedule response (confirmed, spec p. 21)
+
+**Every success body wraps the event in a `maintenanceEvent` envelope** — the id is NOT at the
+top level:
+
+```json
+{
+  "maintenanceEvent": {
+    "maintenanceEventId": "ef30587c-eb05-46f2-b2a7-f44e6d360dd0",
+    "orgId": "BAC",
+    "participantName": "Reseller Participant",
+    "contactName": "Contact Name",
+    "contactPhone": "99955876",
+    "contactEmail": "ews@example.com",
+    "submittedBy": "Reseller Submitted",
+    "submissionDate": "2020-04-03T10:37:28.123Z",
+    "scheduledStartDate": "2020-04-03T10:37:28.123Z",
+    "scheduledEndDate": "2020-04-03T10:37:28.123Z",
+    "maintenanceType": "EMERGENCY_SCHEDULED",
+    "status": "NOT_STARTED",
+    "daysAdvanceNotice": 45,
+    "suppressDuplicatePayments": false,
+    "ewsHold": "EWS_HOLD",
+    "ticketNumber": "SVC02345",
+    "networkNotificationId": "74758"
+  }
+}
+```
+
+The response field table also lists **`location`** (String, "URI of the resource", required) —
+a resource URI accompanies the created event.
+
+#### Scheduling rules (spec pp. 59–61 use cases)
+
+- **`maintenanceType` is derived from lead time**: ≥ 15 days out → `MAINTENANCE_SCHEDULED`;
+  < 15 days → `EMERGENCY_SCHEDULED`; within 15 minutes of current time →
+  `EMERGENCY_IMMEDIATE` (the use case also mentions an `emergencyImmediateStart` indicator set
+  to `True` for start-now flows — not in the §3.1 field table; confirm before use).
+- **400 rejections carry an error `detail` string.** Documented details: *"Scheduled outside
+  allowed time"*, *"Maintenance event could not be created due to a scheduling conflict"*
+  (overlapping event), *"Value of ewsHold cannot be EWS_HOLD for this organization"*, and
+  *"Scheduled maintenance event exceeds the limit"*.
+- **Limit: sixty (60)** scheduled-but-not-started events per Organization.
+- Only Resellers can hold messages for a specified Organization (reseller-child rejection).
+
 ### 3.2 Activate (Start) Maintenance Event
 
 Changes event status to `IN_PROGRESS`, sets the actual start time, and initiates the
@@ -91,6 +140,12 @@ MQ Hold process if configured.
 { "maintenanceEventId": "f879562c-b912-44e9-a592-71d3aef09afb" }
 ```
 
+Confirmed (spec pp. 24–25, 63–64): the 200 body is the same `maintenanceEvent` envelope with
+`status: "IN_PROGRESS"` and an `actualStartDate`. Validations: `maintenanceEventId` must exist.
+Start-window rules: *"Event must be started within six (6) hours of scheduled time"* (400 with
+that detail otherwise); an event with no actual start a day or more after its scheduled start
+is set to **`NO_SHOW`** by EWS.
+
 ### 3.3 Deactivate (Complete) Maintenance Event
 
 Changes event status to `COMPLETE`, sets the actual end time, and releases any held
@@ -99,6 +154,11 @@ MQ messages.
 - Endpoint: `POST /v1/events/complete`
 - Success: `200 OK`
 - Body: `maintenanceEventId` (as above)
+
+Confirmed (spec pp. 37–38): 200 body is the `maintenanceEvent` envelope with
+`status: "COMPLETE"`, `actualStartDate`, and `actualEndDate`. Validations with response codes:
+`maintenanceEventId` must exist → **404**; must be in `IN_PROGRESS` or `PRE_COMPLETE` status →
+**422**.
 
 ### 3.4 Cancel Maintenance Event
 
@@ -109,34 +169,79 @@ to `CANCELLED`.
 - Success: `200 OK`
 - Body: `maintenanceEventId` (as above)
 
-### 3.5 Get Maintenance Event (status read)
+Confirmed (spec pp. 34–35): 200 body is the `maintenanceEvent` envelope with
+`status: "CANCELLED"`. Validations: `maintenanceEventId` must exist; must be in
+`NOT_STARTED` status.
 
-> ⚠️ Not in the photographed spec pages. Reported by our ops team (2026-08-06): EWS
-> exposes a read endpoint keyed by the maintenance event id. Everything below except
-> the path is **assumed** until EWS confirms — see open question #2.
+### 3.5 Get Maintenance Events for orgId (the read)
 
-- Endpoint: `GET /v1/events/{maintenanceEventId}` (path assumed to follow the
-  standard REST form; the internal report wrote it as `/v1/events.{maintenanceEventId}`
-  — confirm the separator)
-- Success: `200 OK` (assumed)
+> ✅ **Confirmed 2026-08-12** (spec pp. 50–52). The read is **org-scoped with query
+> parameters** — there is **no per-id GET**, and the earlier ops-reported
+> `/v1/events/{maintenanceEventId}` / `/v1/events.{id}` forms do not exist (a per-id path
+> draws a 400).
+
+- Endpoint: `GET /v1/events?orgId={orgId}&status={status}&dateFrom={date}&dateTo={date}`
+  (`status`, `dateFrom`/`dateTo` optional; multiple events come back "in the order of their
+  schedule date")
+- Success: `200 OK`; OAuth scope `maintenance-event`
 - Headers: common headers per §2; no `idempotency-id` (reads are naturally idempotent)
 
-Assumed response body (parse leniently until confirmed):
+Response body — plural `maintenanceEvents` array of full event objects:
 
 ```json
 {
-  "maintenanceEventId": "f879562c-b912-44e9-a592-71d3aef09afb",
-  "status": "SCHEDULED"
+  "maintenanceEvents": [
+    {
+      "maintenanceEventId": "7018f6e2-67e1-4d51-b8d8-3f0295d15ae9",
+      "orgId": "CQ7",
+      "participantName": "Participant Name",
+      "contactName": "Contact Name",
+      "contactPhone": "9995559999",
+      "contactEmail": "ews@example.com",
+      "submittedBy": "Submitted Name",
+      "submissionDate": "2020-04-03T10:37:28.123Z",
+      "scheduledStartDate": "2020-04-03T10:37:28.123Z",
+      "scheduledEndDate": "2020-04-03T10:37:28.123Z",
+      "maintenanceType": "MAINTENANCE_SCHEDULED",
+      "status": "NOT_STARTED",
+      "daysAdvanceNotice": 210,
+      "suppressDuplicatePayments": false,
+      "ewsHold": "EWS_HOLD"
+    }
+  ]
 }
 ```
 
-`status` presumably uses the lifecycle vocabulary: `SCHEDULED`, `IN_PROGRESS`,
-`COMPLETE`, `CANCELLED`.
+Completed entries additionally carry `actualStartDate` / `actualEndDate`.
 
-### Event lifecycle (implied)
+### 3.6 Count for orgId (queue depth)
 
-`SCHEDULED → IN_PROGRESS → COMPLETE`, with `SCHEDULED → CANCELLED` allowed only
-before start.
+Confirmed (spec pp. 56–57): counts the notifications currently held for the org, by queue.
+Callable whether or not a maintenance event is in progress.
+
+- Endpoint: `GET /v1/count?orgId={orgId}`
+- Success: `200 OK`; OAuth scope `maintenance-event`
+
+```json
+{
+  "queueDepths": [
+    { "name": "rejected-payment", "count": 1594 },
+    { "name": "create-payment-request", "count": 1917 }
+  ]
+}
+```
+
+Queue names seen: `rejected-payment`, `restrict-customer`, `change-payment-status`,
+`organization-change`, `delete-profile`, `deactivate-payment-request`,
+`create-payment-request`.
+
+### Event lifecycle (confirmed vocabulary)
+
+Upstream statuses: **`NOT_STARTED`** (freshly scheduled — the spec never uses "SCHEDULED"),
+`IN_PROGRESS`, `PRE_COMPLETE` (seen only in the complete-validation list; semantics
+unconfirmed), `COMPLETE`, `CANCELLED`, `NO_SHOW` (set by EWS a day+ after a scheduled start
+with no actual start). Flow: `NOT_STARTED → IN_PROGRESS → COMPLETE`, `NOT_STARTED →
+CANCELLED` (only before start), `NOT_STARTED → NO_SHOW` (EWS-driven timeout).
 
 ## 4. OAuth2 access token flow
 
@@ -205,11 +310,13 @@ and mutual TLS (mTLS).
 
 ## 5. Open questions to confirm with EWS
 
-1. Error response body shape and error-code catalog (only success codes were visible).
-2. **Partially answered 2026-08-06** — a status read keyed by `maintenanceEventId`
-   exists (see §3.5). Still to confirm with EWS: the exact path form, the response
-   body schema, the status vocabulary, error codes (404 for unknown id?), and
-   whether a **list** endpoint also exists.
+1. **Partially answered 2026-08-12** — schedule 400s carry an error `detail` string (see
+   §3.1); complete uses 404 (unknown id) / 422 (wrong state). Still open: the full error
+   body schema and complete error-code catalog.
+2. **Answered 2026-08-12** (spec pp. 21–52): the read is the org-scoped list
+   `GET /v1/events?orgId=...` (§3.5) — no per-id GET exists. Response schemas and the
+   status vocabulary are confirmed; success bodies wrap events in a `maintenanceEvent`
+   envelope. Remaining niggle: the exact semantics of `PRE_COMPLETE`.
 3. Does `idempotency-id` apply to `start`/`complete`/`cancel`, or only `schedule`?
 4. Must `request-id` be unique per attempt (i.e., new value on retry) while
    `idempotency-id` stays constant?
@@ -218,5 +325,8 @@ and mutual TLS (mTLS).
    open: whether mTLS is required on the token endpoint and/or the API endpoints,
    and completion of our client registration (client_id, public key, kid).
 6. Rate limits / concurrency limits, and clock-skew tolerance on JWT claims.
-7. What the `schedule` response body contains (presumably `maintenanceEventId`) and
-   whether scheduling constraints exist (lead time, max window length, overlap rules).
+7. **Answered 2026-08-12** (spec pp. 21, 59–61): the schedule response is the
+   `maintenanceEvent` envelope (§3.1). Scheduling constraints: `maintenanceType` lead-time
+   tiers (15 days / 15 minutes), overlap conflicts → 400, `ewsHold` org entitlement → 400,
+   max 60 scheduled-but-not-started events, start within 6 hours of the scheduled time,
+   `NO_SHOW` after a day without a start.

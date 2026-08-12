@@ -35,9 +35,9 @@ sys.dont_write_bytecode = True
 
 import logging
 from datetime import datetime, timezone
-from typing import Annotated
+from typing import Annotated, Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.alias_generators import to_camel
 
 # Internal imports
@@ -124,24 +124,51 @@ class EwsLifecycleRequest(BaseModel):
 class EwsScheduleResponse(BaseModel):
 
     """
-    LENIENT parse of the schedule 201 body — its exact shape is unconfirmed (open question #2),
-    so unknown fields are retained via ``extra="allow"`` and ``maintenanceEventId`` may be
-    absent.
+    LENIENT parse of the schedule 201 body. The confirmed shape (vendor spec pp. 21, transcribed
+    2026-08-12) wraps every field in a ``maintenanceEvent`` envelope::
+
+        {"maintenanceEvent": {"maintenanceEventId": "...", "status": "NOT_STARTED", ...}}
+
+    The before-validator unwraps that envelope; unknown fields are retained via
+    ``extra="allow"`` and ``maintenanceEventId`` stays optional so an unexpected body degrades
+    to the PENDING_UPSTREAM_ID path instead of crashing.
     """
 
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="allow")
 
     maintenance_event_id: str | None = None
+    status: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _unwrap_envelope(cls, data: Any) -> Any:
+
+        """
+        Unwrap the vendor's ``maintenanceEvent`` envelope when present — direct construction
+        (tests, stubs) without the envelope passes through untouched.
+
+        :param data: The raw input mapping before field validation.
+        :type data: Any
+        :return: The inner event mapping, or the input unchanged.
+        :rtype: Any
+        """
+
+        if isinstance(data, dict) and isinstance(data.get("maintenanceEvent"), dict):
+            return data["maintenanceEvent"]
+        # endIf
+        return data
+    # endDef
 # endClass
 
 
 class EwsEventStatusResponse(BaseModel):
 
     """
-    LENIENT parse of the ``GET /v1/events/{maintenanceEventId}`` 200 body — the response schema
-    is unconfirmed (vendor doc §3.5 / open question #2), so unknown fields are retained via
-    ``extra="allow"`` and both fields may be absent. ``status`` stays a raw string here: the
-    upstream vocabulary is not ours to enumerate until EWS confirms it.
+    LENIENT parse of one entry of the org-scoped list read's ``maintenanceEvents`` array
+    (``GET /v1/events?orgId={orgId}``, vendor spec pp. 50-52). Unknown fields are retained via
+    ``extra="allow"`` and both typed fields may be absent. ``status`` stays a raw string here —
+    the confirmed upstream vocabulary (NOT_STARTED, IN_PROGRESS, PRE_COMPLETE, COMPLETE,
+    CANCELLED, NO_SHOW) is EWS's, not the facade's, and an unlisted value must surface verbatim.
     """
 
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="allow")

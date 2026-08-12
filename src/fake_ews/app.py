@@ -55,8 +55,10 @@ CLIENT_ASSERTION_TYPE = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
 TOKEN_TTL_SECONDS = 1800
 FAULT_HEADER = "x-fake-fault"
 SLOW_FAULT_SECONDS = 15.0
-# ZOMS lifecycle vocabulary as the fake upstream sees it.
-STATUS_SCHEDULED = "SCHEDULED"
+# ZOMS lifecycle vocabulary as the real upstream uses it (vendor spec pp. 21-38): a freshly
+# scheduled event is NOT_STARTED (not "SCHEDULED"), and responses wrap the event in a
+# ``maintenanceEvent`` envelope.
+STATUS_NOT_STARTED = "NOT_STARTED"
 STATUS_IN_PROGRESS = "IN_PROGRESS"
 STATUS_COMPLETE = "COMPLETE"
 STATUS_CANCELLED = "CANCELLED"
@@ -84,6 +86,7 @@ class _FakeEwsState:
 
         self.schedules_by_idempotency: dict[str, dict[str, Any]] = {}
         self.event_statuses: dict[str, str] = {}
+        self.event_orgs: dict[str, str] = {}
         self.consumed_faults: set[str] = set()
     # endDef
 # endClass
@@ -93,9 +96,9 @@ def create_fake_ews_app() -> FastAPI:
 
     """
     Build a self-contained fake EWS application: ``POST /token`` plus the five ZOMS operations
-    (four POSTs and the status read) under ``/zoms/v1/events``, with per-app in-memory state and
-    fault injection via the ``x-fake-fault`` header (``500``, ``429``, ``401`` — injected once,
-    then behaves — and ``slow``).
+    (four POSTs and the org-scoped list read) under ``/zoms/v1/events``, with per-app in-memory
+    state and fault injection via the ``x-fake-fault`` header (``500``, ``429``, ``401`` —
+    injected once, then behaves — and ``slow``).
 
     :return: The fake EWS FastAPI application.
     :rtype: FastAPI
@@ -221,11 +224,12 @@ def create_fake_ews_app() -> FastAPI:
 
         """
         Fake schedule: enforce headers, validate the body against the real southbound model,
-        and replay the SAME 201 body for a repeated idempotency-id.
+        and replay the SAME 201 body for a repeated idempotency-id. The 201 body wraps the
+        event in the vendor's ``maintenanceEvent`` envelope (spec pp. 21).
 
         :param request: The incoming request.
         :type request: Request
-        :return: 201 with ``maintenanceEventId``, or a 4xx on validation failure.
+        :return: 201 with the ``maintenanceEvent`` envelope, or a 4xx on validation failure.
         :rtype: JSONResponse
         """
 
@@ -250,12 +254,17 @@ def create_fake_ews_app() -> FastAPI:
             return JSONResponse(status_code=201, content=stored)
         # endIf
         event_id = str(uuid.uuid4())
+        org_id = str(body.get("orgId"))
         response_body: dict[str, Any] = {
-            "maintenanceEventId": event_id,
-            "status": STATUS_SCHEDULED,
+            "maintenanceEvent": {
+                "maintenanceEventId": event_id,
+                "orgId": org_id,
+                "status": STATUS_NOT_STARTED,
+            },
         }
         state.schedules_by_idempotency[idempotency_id] = response_body
-        state.event_statuses[event_id] = STATUS_SCHEDULED
+        state.event_statuses[event_id] = STATUS_NOT_STARTED
+        state.event_orgs[event_id] = org_id
         return JSONResponse(status_code=201, content=response_body)
     # endDef
 
@@ -307,19 +316,27 @@ def create_fake_ews_app() -> FastAPI:
         # endIf
         if current != required_status:
             return JSONResponse(
-                status_code=409,
+                status_code=422,
                 content={"error": f"cannot {operation} an event in status {current}"},
             )
         # endIf
         state.event_statuses[event_id] = target_status
-        return JSONResponse(status_code=200, content={"status": target_status})
+        return JSONResponse(
+            status_code=200,
+            content={
+                "maintenanceEvent": {
+                    "maintenanceEventId": event_id,
+                    "status": target_status,
+                },
+            },
+        )
     # endDef
 
     @app.post("/zoms/v1/events/start")
     async def start(request: Request) -> JSONResponse:
 
         """
-        Fake start: SCHEDULED -> IN_PROGRESS only.
+        Fake start: NOT_STARTED -> IN_PROGRESS only.
 
         :param request: The incoming request.
         :type request: Request
@@ -327,7 +344,7 @@ def create_fake_ews_app() -> FastAPI:
         :rtype: JSONResponse
         """
 
-        return await _lifecycle(request, "start", STATUS_SCHEDULED, STATUS_IN_PROGRESS)
+        return await _lifecycle(request, "start", STATUS_NOT_STARTED, STATUS_IN_PROGRESS)
     # endDef
 
     @app.post("/zoms/v1/events/complete")
@@ -349,7 +366,7 @@ def create_fake_ews_app() -> FastAPI:
     async def cancel(request: Request) -> JSONResponse:
 
         """
-        Fake cancel: SCHEDULED -> CANCELLED only.
+        Fake cancel: NOT_STARTED -> CANCELLED only.
 
         :param request: The incoming request.
         :type request: Request
@@ -357,21 +374,20 @@ def create_fake_ews_app() -> FastAPI:
         :rtype: JSONResponse
         """
 
-        return await _lifecycle(request, "cancel", STATUS_SCHEDULED, STATUS_CANCELLED)
+        return await _lifecycle(request, "cancel", STATUS_NOT_STARTED, STATUS_CANCELLED)
     # endDef
 
-    @app.get("/zoms/v1/events/{maintenance_event_id}")
-    async def get_status(request: Request, maintenance_event_id: str) -> JSONResponse:
+    @app.get("/zoms/v1/events")
+    async def list_events(request: Request) -> JSONResponse:
 
         """
-        Fake status read: enforce headers (no idempotency-id — reads are naturally idempotent)
-        and return the event's current lifecycle status per vendor doc §3.5's assumed shape.
+        Fake org-scoped list read (``GET /v1/events?orgId={orgId}``, spec pp. 50-52): enforce
+        headers (no idempotency-id — reads are naturally idempotent) and return every event
+        for the org as a ``maintenanceEvents`` array.
 
         :param request: The incoming request.
         :type request: Request
-        :param maintenance_event_id: The EWS maintenance event id from the path.
-        :type maintenance_event_id: str
-        :return: 200 with ``maintenanceEventId`` and ``status``, or 401/400/404 on failure.
+        :return: 200 with ``maintenanceEvents``, or 401/400 on failure.
         :rtype: JSONResponse
         """
 
@@ -383,14 +399,19 @@ def create_fake_ews_app() -> FastAPI:
         if header_error is not None:
             return header_error
         # endIf
-        current = state.event_statuses.get(maintenance_event_id)
-        if current is None:
-            return JSONResponse(status_code=404, content={"error": "unknown maintenanceEventId"})
+        org_id = request.query_params.get("orgId")
+        if not org_id:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "orgId query parameter is required"},
+            )
         # endIf
-        return JSONResponse(
-            status_code=200,
-            content={"maintenanceEventId": maintenance_event_id, "status": current},
-        )
+        events = [
+            {"maintenanceEventId": event_id, "orgId": org_id, "status": status}
+            for event_id, status in state.event_statuses.items()
+            if state.event_orgs.get(event_id) == org_id
+        ]
+        return JSONResponse(status_code=200, content={"maintenanceEvents": events})
     # endDef
 
     return app

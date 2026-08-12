@@ -209,8 +209,9 @@ class EwsScheduleRequest(BaseModel)   # aliases: orgId, participantName, submitt
 class EwsLifecycleRequest(BaseModel)  # maintenanceEventId
 
 class EwsScheduleResponse(BaseModel)  # LENIENT: model_config extra="allow";
-    # maintenance_event_id: str | None (alias maintenanceEventId) — the 201
-    # body shape is unconfirmed (open question #2).
+    # maintenance_event_id: str | None (alias maintenanceEventId), status: str | None.
+    # The confirmed 201 body (2026-08-12, spec p. 21) wraps the event in a
+    # "maintenanceEvent" envelope — a before-validator unwraps it.
 ```
 
 ### `apis/models/zelle/records.py` — internal persistence shapes
@@ -361,11 +362,14 @@ class ZomsClient:
     async def complete(self, ews_event_id: str) -> list[str]
     async def cancel(self, ews_event_id: str) -> list[str]
     async def get_status(self, ews_event_id: str) -> tuple[EwsEventStatusResponse, list[str]]
+    async def list_events(self) -> tuple[list[EwsEventStatusResponse], list[str]]
     # each returns the list of EWS request-ids used (one per attempt) for audit
 ```
 
 Behavior: URLs `{api_base_url}/v1/events/{schedule|start|complete|cancel}` and
-`GET {api_base_url}/v1/events/{maintenanceEventId}` for the status read.
+`GET {api_base_url}/v1/events?orgId={org_id}` for the read (confirmed 2026-08-12 — there is
+no per-id GET; `get_status` filters the org list client-side and raises
+UpstreamRejectedError when the id is absent).
 Headers per attempt: `Authorization: Bearer <broker.get()>`, `accept`,
 `content-type: application/json`, fresh `request-id: uuid4` per attempt;
 `idempotency-id` on schedule only (same value across retries). Response mapping:
@@ -387,8 +391,10 @@ UpstreamUnavailableError. It never raises UpstreamUncertainError — a failed
 read changed nothing. The 200 body parses leniently (EwsEventStatusResponse;
 schema unconfirmed, vendor doc §3.5).
 
-Never log request/response bodies at the client (they carry PII + tokens);
-log method, URL, status, request-id, elapsed.
+Never log request/response bodies at the client in full (they carry PII + tokens);
+log method, URL, status, request-id, elapsed. Exception (2026-08-12): 4xx error bodies
+and a schedule 2xx missing its id are logged masked + truncated — the secrets policy
+sanctions masked EWS error bodies at the client layer.
 
 ## Slice D — event service + watchdog
 
@@ -540,13 +546,15 @@ service, serialize. No business logic in routes.
 - `POST /zoms/v1/events/schedule`: requires Authorization/accept/content-type/
   request-id/idempotency-id headers; validates body against the EWS field rules;
   in-memory store keyed by idempotency-id (replay returns the SAME 201 body);
-  201 `{"maintenanceEventId": "<uuid4>", "status": "SCHEDULED"}`.
+  201 `{"maintenanceEvent": {"maintenanceEventId": "<uuid4>", "orgId": ...,
+  "status": "NOT_STARTED"}}` (the confirmed envelope; upstream vocabulary uses
+  NOT_STARTED, never "SCHEDULED").
 - `POST .../start|complete|cancel`: enforce the real lifecycle (start only from
-  SCHEDULED, complete only from IN_PROGRESS, cancel only from SCHEDULED);
-  violations → 409-ish error; success → 200 `{"status": ...}`.
-- `GET /zoms/v1/events/{maintenanceEventId}`: headers as above minus
-  idempotency-id; unknown id → 404; success → 200
-  `{"maintenanceEventId": ..., "status": <current>}`.
+  NOT_STARTED, complete only from IN_PROGRESS, cancel only from NOT_STARTED);
+  wrong state → 422; unknown id → 404; success → 200 with the `maintenanceEvent`
+  envelope.
+- `GET /zoms/v1/events?orgId=...`: headers as above minus idempotency-id; missing
+  orgId → 400; success → 200 `{"maintenanceEvents": [...]}` filtered to the org.
 - Fault injection via header `x-fake-fault`: `"500"` → 500, `"429"` → 429 with
   `Retry-After: 1`, `"401"` → 401 (once per unique request-id, then behave),
   `"slow"` → `asyncio.sleep(15)`.

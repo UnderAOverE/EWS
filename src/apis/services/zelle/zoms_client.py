@@ -36,9 +36,11 @@ sys.dont_write_bytecode = True
 # External imports
 
 import asyncio
+import re
 import time
 import uuid
 from typing import Any
+from urllib.parse import urlencode
 
 import httpx
 from pydantic import ValidationError
@@ -79,11 +81,39 @@ POST_SEND_ERRORS = (
     httpx.WriteTimeout,
     httpx.RemoteProtocolError,
 )
+# 4xx error bodies are logged masked + truncated (the secrets policy sanctions masked EWS error
+# bodies at the client layer); success bodies are never logged except a masked snippet when a
+# schedule 2xx carries no maintenanceEventId. Masking strips email-shaped and long-digit runs.
+LOG_BODY_MAX_CHARS = 500
+EMAIL_PATTERN = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+")
+LONG_DIGIT_PATTERN = re.compile(r"\d{7,}")
 
 
 # ----------------------------------------------------------------------------------------------------#
 # Classes or functions.                                                                               #
 # ----------------------------------------------------------------------------------------------------#
+
+
+def _mask_body_for_log(text: str) -> str:
+
+    """
+    Mask email addresses and long digit runs (phones, account-shaped numbers) in a response
+    body and truncate it for logging — enough to diagnose an EWS rejection without moving PII
+    into the logs.
+
+    :param text: The raw response body text.
+    :type text: str
+    :return: The masked, truncated body.
+    :rtype: str
+    """
+
+    masked = EMAIL_PATTERN.sub("***@***", text)
+    masked = LONG_DIGIT_PATTERN.sub("***", masked)
+    if len(masked) > LOG_BODY_MAX_CHARS:
+        return masked[:LOG_BODY_MAX_CHARS] + "...[truncated]"
+    # endIf
+    return masked
+# endDef
 
 
 class ZomsClient:
@@ -93,8 +123,9 @@ class ZomsClient:
     :meth:`_post` and the status read through :meth:`_get`; each owns its retry/response-mapping
     matrix, and each operation returns the list of EWS ``request-id`` values used (one per HTTP
     attempt) so the audit trail can bind correlation ids to upstream attempts. Request/response
-    bodies are never logged here — they carry PII and tokens; only method, URL, status,
-    request-id, and elapsed time are.
+    bodies are never logged in full — they carry PII and tokens; only method, URL, status,
+    request-id, and elapsed time are, plus a masked/truncated body snippet on 4xx rejections
+    (and on a schedule 2xx that carries no maintenanceEventId) for diagnosability.
     """
 
     def __init__(
@@ -222,23 +253,57 @@ class ZomsClient:
         ) -> tuple[EwsEventStatusResponse, list[str]]:
 
         """
-        Read the live upstream status of a maintenance event
-        (``GET /v1/events/{maintenanceEventId}``). A read is side-effect free, so unlike the
-        lifecycle POSTs every transport failure and 5xx is plainly retryable and nothing maps
-        to UNCERTAIN.
+        Read the live upstream view of one maintenance event via the org-scoped list read
+        (``GET /v1/events?orgId={orgId}`` — the only read the vendor spec defines; there is no
+        per-id GET), filtered client-side for ``ews_event_id``. A read is side-effect free, so
+        unlike the lifecycle POSTs every transport failure and 5xx is plainly retryable and
+        nothing maps to UNCERTAIN.
 
         :param ews_event_id: The EWS maintenance event id.
         :type ews_event_id: str
-        :return: The leniently-parsed 200 body and the request-ids used.
+        :return: The matching leniently-parsed entry and the request-ids used.
         :rtype: tuple[EwsEventStatusResponse, list[str]]
         :raises UpstreamUnavailableError: After exhausted transient retries (connect/read/5xx).
         :raises RateLimitedError: On a second 429 after the single honored Retry-After.
-        :raises UpstreamRejectedError: On a definite EWS 4xx rejection (including unknown id).
+        :raises UpstreamRejectedError: On a definite EWS 4xx, or when the org's list does not
+            contain ``ews_event_id``.
         :raises AuthConfigError: When two consecutive tokens are rejected.
         """
 
-        response, request_ids = await self._get(f"/v1/events/{ews_event_id}")
-        return self._parse_status_response(response), request_ids
+        entries, request_ids = await self.list_events()
+        for entry in entries:
+            if entry.maintenance_event_id == ews_event_id:
+                return entry, request_ids
+            # endIf
+        # endFor
+        logger.warning(
+            "upstream list (%d events) does not contain maintenanceEventId=%s",
+            len(entries),
+            ews_event_id,
+        )
+        raise UpstreamRejectedError(
+            "EWS does not list the requested maintenance event for this org.",
+        )
+    # endDef
+
+    async def list_events(self) -> tuple[list[EwsEventStatusResponse], list[str]]:
+
+        """
+        List the org's maintenance events upstream (``GET /v1/events?orgId={orgId}``, vendor
+        spec pp. 50-52). The 200 body is ``{"maintenanceEvents": [...]}``; entries parse
+        leniently and an unparseable entry is skipped with a warning, never a crash.
+
+        :return: The parsed entries and the request-ids used.
+        :rtype: tuple[list[EwsEventStatusResponse], list[str]]
+        :raises UpstreamUnavailableError: After exhausted transient retries (connect/read/5xx).
+        :raises RateLimitedError: On a second 429 after the single honored Retry-After.
+        :raises UpstreamRejectedError: On a definite EWS 4xx rejection.
+        :raises AuthConfigError: When two consecutive tokens are rejected.
+        """
+
+        query = urlencode({"orgId": self._settings.org_id})
+        response, request_ids = await self._get(f"/v1/events?{query}")
+        return self._parse_events_list(response), request_ids
     # endDef
 
     async def _lifecycle(
@@ -401,7 +466,15 @@ class ZomsClient:
             # endIf
             if 400 <= status < 500:
                 # The rejected fields were facade-enriched — this surfaces as a facade-owned
-                # 502 northbound, never a consumer 4xx. The body is not parsed or logged here.
+                # 502 northbound, never a consumer 4xx. The masked error body is logged here
+                # (and only here) so the EWS-stated reason is diagnosable.
+                logger.warning(
+                    "POST %s rejected (HTTP %s) request_id=%s body=%s",
+                    url,
+                    status,
+                    request_id,
+                    _mask_body_for_log(response.text),
+                )
                 raise UpstreamRejectedError(
                     f"EWS rejected the {operation} request (HTTP {status}).",
                 )
@@ -437,7 +510,7 @@ class ZomsClient:
         UNCERTAIN is never raised; a definite 401 refreshes the token and retries exactly once;
         one 429 Retry-After is honored. A fresh ``request-id`` is minted per attempt.
 
-        :param path: The ZOMS path (e.g. ``/v1/events/{maintenanceEventId}``).
+        :param path: The ZOMS path including any query string (e.g. ``/v1/events?orgId=BBO``).
         :type path: str
         :return: The 2xx response and every request-id used.
         :rtype: tuple[httpx.Response, list[str]]
@@ -523,10 +596,17 @@ class ZomsClient:
                 )
             # endIf
             if 400 <= status < 500:
-                # Includes an unknown maintenanceEventId — upstream drift the facade surfaces
-                # as its own 502, never as a consumer 4xx. The body is not parsed or logged.
+                # Upstream drift the facade surfaces as its own 502, never as a consumer 4xx.
+                # The masked error body is logged so the EWS-stated reason is diagnosable.
+                logger.warning(
+                    "GET %s rejected (HTTP %s) request_id=%s body=%s",
+                    url,
+                    status,
+                    request_id,
+                    _mask_body_for_log(response.text),
+                )
                 raise UpstreamRejectedError(
-                    f"EWS rejected the status read (HTTP {status}).",
+                    f"EWS rejected the read (HTTP {status}).",
                 )
             # endIf
             # 5xx: a failed read changed nothing — plain transient.
@@ -546,31 +626,42 @@ class ZomsClient:
         # endWhile
     # endDef
 
-    def _parse_status_response(self, response: httpx.Response) -> EwsEventStatusResponse:
+    def _parse_events_list(self, response: httpx.Response) -> list[EwsEventStatusResponse]:
 
         """
-        Parse the status 200 body leniently: an unparseable or unexpected body degrades to
-        absent fields, never a crash — the vendor's success must not become a facade failure
-        (the response schema is unconfirmed; vendor doc §3.5).
+        Parse the list-read 200 body (``{"maintenanceEvents": [...]}``) leniently: an
+        unparseable body degrades to an empty list and an unparseable entry is skipped —
+        the vendor's success must not become a facade failure.
 
-        :param response: The 2xx status response.
+        :param response: The 2xx list response.
         :type response: httpx.Response
-        :return: The lenient status response model.
-        :rtype: EwsEventStatusResponse
+        :return: The parsed entries.
+        :rtype: list[EwsEventStatusResponse]
         """
 
         try:
             data = response.json()
         except ValueError:
-            logger.warning("status success body was not JSON; treating fields as absent")
-            return EwsEventStatusResponse()
+            logger.warning("events list body was not JSON; treating the list as empty")
+            return []
         # endTryExcept
-        try:
-            return EwsEventStatusResponse.model_validate(data)
-        except ValidationError:
-            logger.warning("status success body had unexpected shape; fields treated absent")
-            return EwsEventStatusResponse()
-        # endTryExcept
+        entries = data.get("maintenanceEvents") if isinstance(data, dict) else None
+        if not isinstance(entries, list):
+            logger.warning(
+                "events list body had no maintenanceEvents array; masked body=%s",
+                _mask_body_for_log(response.text),
+            )
+            return []
+        # endIf
+        parsed: list[EwsEventStatusResponse] = []
+        for entry in entries:
+            try:
+                parsed.append(EwsEventStatusResponse.model_validate(entry))
+            except ValidationError:
+                logger.warning("skipping an unparseable maintenanceEvents entry")
+            # endTryExcept
+        # endFor
+        return parsed
     # endDef
 
     def _parse_schedule_response(self, response: httpx.Response) -> EwsScheduleResponse:
@@ -593,11 +684,20 @@ class ZomsClient:
             return EwsScheduleResponse()
         # endTryExcept
         try:
-            return EwsScheduleResponse.model_validate(data)
+            parsed = EwsScheduleResponse.model_validate(data)
         except ValidationError:
             logger.warning("schedule success body had unexpected shape; event id treated absent")
             return EwsScheduleResponse()
         # endTryExcept
+        if parsed.maintenance_event_id is None:
+            # The one sanctioned success-body snippet: without it, an envelope drift silently
+            # parks every event in PENDING_UPSTREAM_ID with nothing to diagnose from.
+            logger.warning(
+                "schedule 2xx body carried no maintenanceEventId; masked body=%s",
+                _mask_body_for_log(response.text),
+            )
+        # endIf
+        return parsed
     # endDef
 # endClass
 

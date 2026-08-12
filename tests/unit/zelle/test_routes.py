@@ -461,8 +461,9 @@ async def test_host_style_wiring_serves_traffic(
 async def test_upstream_status_end_to_end(consumer: httpx.AsyncClient) -> None:
 
     """
-    The live status read against the fake EWS: after schedule it reports SCHEDULED on both
-    sides; after start it tracks the upstream to IN_PROGRESS. Correlation id is echoed.
+    The live status read against the fake EWS: after schedule the facade says SCHEDULED while
+    the upstream vocabulary says NOT_STARTED (surfaced verbatim); after start both sides read
+    IN_PROGRESS. Correlation id is echoed.
     """
 
     created = await consumer.post(
@@ -480,7 +481,7 @@ async def test_upstream_status_end_to_end(consumer: httpx.AsyncClient) -> None:
     view = checked.json()
     assert view["eventId"] == event_id
     assert view["localStatus"] == "SCHEDULED"
-    assert view["upstreamStatus"] == "SCHEDULED"
+    assert view["upstreamStatus"] == "NOT_STARTED"
     assert view["correlationId"] == "c-live-1"
     assert checked.headers["X-Correlation-Id"] == "c-live-1"
     started = await consumer.post(

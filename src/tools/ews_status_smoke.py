@@ -31,7 +31,13 @@ EWS connectivity smoke test.
 Usage (env configured exactly like the facade — the ``ZELLE_*`` variables)::
 
     python -m src.tools.ews_status_smoke <maintenanceEventId>
+    python -m src.tools.ews_status_smoke --list
     python -m src.tools.ews_status_smoke --dump-assertion
+
+``--list`` calls the org-scoped list read (``GET /v1/events?orgId=...``) and prints every
+maintenance event EWS holds for the configured org — id, status, and scheduled window only,
+never the contact PII. This is the recovery path for an event stuck in PENDING_UPSTREAM_ID:
+find its EWS id here, then resolve it through the admin endpoint.
 
 ``--dump-assertion`` prints one freshly signed client assertion plus its decoded header and
 claims — the artifact EWS support asks for when they offer to "decode your assertion." It is
@@ -161,6 +167,65 @@ async def run_smoke(maintenance_event_id: str) -> int:
 # endDef
 
 
+async def run_list() -> int:
+
+    """
+    List every maintenance event EWS holds for the configured org and log id, status, and
+    scheduled window — never the contact PII the entries also carry.
+
+    :return: The process exit code (see the module docstring).
+    :rtype: int
+    """
+
+    settings = get_zelle_settings()
+    client = _build_http_client(settings)
+    try:
+        broker = TokenBroker(settings, client)
+        zoms = ZomsClient(settings, client, broker)
+        entries, request_ids = await zoms.list_events()
+        logger.info(
+            "smoke: LIST SUCCESS — EWS holds %d event(s) for org %s (attempts=%d)",
+            len(entries),
+            settings.org_id,
+            len(request_ids),
+        )
+        for entry in entries:
+            extra = entry.model_extra or {}
+            logger.info(
+                "upstream event: maintenanceEventId=%s status=%s start=%s end=%s",
+                entry.maintenance_event_id,
+                entry.status,
+                extra.get("scheduledStartDate"),
+                extra.get("scheduledEndDate"),
+            )
+        # endFor
+        return EXIT_SUCCESS
+    except UpstreamRejectedError as exc:
+        logger.warning("smoke: LIST REJECTED — %s", exc.message)
+        return EXIT_REACHED_BUT_REJECTED
+    except AuthConfigError as exc:
+        logger.error(
+            "smoke: AUTH FAILURE — %s The network path works but EWS rejected our credentials; "
+            "check client registration, the signing key, and the registered kid.",
+            exc.message,
+        )
+        return EXIT_NOT_PROVEN
+    except RateLimitedError as exc:
+        logger.error("smoke: RATE LIMITED — %s Retry shortly.", exc.message)
+        return EXIT_NOT_PROVEN
+    except UpstreamUnavailableError as exc:
+        logger.error(
+            "smoke: UNREACHABLE — %s Check DNS, firewall/proxy egress, the base/token URLs, "
+            "and the mTLS material paths.",
+            exc.message,
+        )
+        return EXIT_NOT_PROVEN
+    finally:
+        await client.aclose()
+    # endTryExceptFinally
+# endDef
+
+
 def _b64url_decode(segment: str) -> bytes:
 
     """
@@ -235,17 +300,31 @@ def main() -> int:
         help="Sign and print one client assertion with decoded claims (to share with EWS "
         "support); exits after dumping unless a maintenanceEventId is also given.",
     )
+    parser.add_argument(
+        "--list",
+        action="store_true",
+        dest="list_events",
+        help="List every maintenance event EWS holds for the configured org "
+        "(id, status, window — no PII) and exit.",
+    )
     arguments = parser.parse_args()
-    if arguments.maintenance_event_id is None and not arguments.dump_assertion:
-        parser.error("provide a maintenanceEventId, --dump-assertion, or both")
+    if arguments.maintenance_event_id is None and not arguments.dump_assertion \
+            and not arguments.list_events:
+        parser.error("provide a maintenanceEventId, --list, --dump-assertion, or a combination")
     # endIf
     # A standalone process has no host logging config, so the shared logger would swallow the
     # INFO-level verdict — give it a console handler here (host processes never run this).
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     if arguments.dump_assertion:
         dump_code = asyncio.run(dump_assertion())
-        if arguments.maintenance_event_id is None:
+        if arguments.maintenance_event_id is None and not arguments.list_events:
             return dump_code
+        # endIf
+    # endIf
+    if arguments.list_events:
+        list_code = asyncio.run(run_list())
+        if arguments.maintenance_event_id is None:
+            return list_code
         # endIf
     # endIf
     return asyncio.run(run_smoke(arguments.maintenance_event_id))
