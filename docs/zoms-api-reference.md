@@ -235,6 +235,16 @@ Queue names seen: `rejected-payment`, `restrict-customer`, `change-payment-statu
 `organization-change`, `delete-profile`, `deactivate-payment-request`,
 `create-payment-request`.
 
+### 3.7 Create Pre-complete Details (endpoint unconfirmed)
+
+> ⚠️ Named only (spec p. 62, *Process an Organization Maintenance Event* use case) — no
+> path, method, or body was visible. During a window the participant "calls **Create
+> Pre-complete Details** with a count specified for the notification type(s) to be tested"
+> and EWS "releases all held messages of the specified type up to the requested count" — a
+> partial-release mechanism for testing mid-maintenance. This plausibly explains the
+> `PRE_COMPLETE` status accepted by complete (§3.3). Ask EWS for the endpoint spec before
+> any implementation.
+
 ### Event lifecycle (confirmed vocabulary)
 
 Upstream statuses: **`NOT_STARTED`** (freshly scheduled — the spec never uses "SCHEDULED"),
