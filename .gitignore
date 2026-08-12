@@ -125,6 +125,10 @@ CHANGELOG.md
 conf/secrets/*
 !conf/secrets/*.example
 
+# Registered JWKS files (public key + kid) live locally in src/common/ (uat_zell.jwks / zelle.jwks)
+# and are provisioned per environment - keep them out of the repo.
+*.jwks
+
 
 # =====================================================================================================
 # Archived previous tree - kept on disk for reference, not tracked. Adds to .gitignore only stop NEW

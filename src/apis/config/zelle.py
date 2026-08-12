@@ -35,6 +35,7 @@ sys.dont_write_bytecode = True
 
 # External imports
 
+import json
 import logging
 from functools import lru_cache
 from pathlib import Path
@@ -64,11 +65,80 @@ CAT_TOKEN_URL = "https://auth.zelle.cat.earlywarning.io/token"
 PROD_TOKEN_URL = "https://auth.zelle.earlywarning.com/token"
 CAT_TOKEN_AUD = "https://auth-zelle.cat.earlywarning.io/oauth2/access/v1/token"
 PROD_TOKEN_AUD = "https://auth-zelle.earlywarning.com/oauth2/access/v1/token"
+# JWKS files carrying the public key + kid registered with EWS, selected by is_production the same
+# way the endpoints are (CAT reads uat_zell.jwks, PROD reads zelle.jwks). They live in the host
+# app's common folder (mirrored locally at src/common); the file's kid fills signing_kid when
+# ZELLE_SIGNING_KID is not set explicitly. Public material only — never the private key.
+CAT_JWKS_FILENAME = "uat_zell.jwks"
+PROD_JWKS_FILENAME = "zelle.jwks"
+JWKS_DIR = Path(__file__).resolve().parents[2] / "common"
 
 
 # ----------------------------------------------------------------------------------------------------#
 # Classes or functions.                                                                               #
 # ----------------------------------------------------------------------------------------------------#
+
+
+def _coerce_production_flag(value: Any) -> bool:
+
+    """
+    Normalize the raw ``is_production`` input to a bool — env vars arrive as strings, kwargs as
+    bools, and both validators below need the answer before pydantic's own coercion runs.
+
+    :param value: The raw flag value from the pre-validation input mapping.
+    :type value: Any
+    :return: True when the value reads as production.
+    :rtype: bool
+    """
+
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    # endIf
+    return bool(value)
+# endDef
+
+
+def _read_signing_kid(jwks_path: Path) -> str:
+
+    """
+    Extract the signing key's ``kid`` from a JWKS file — either a bare JWK object or a
+    ``{"keys": [...]}`` keyset. The first entry usable for signing wins (``use`` equal to
+    ``sig``, or no ``use`` member at all).
+
+    :param jwks_path: Path to the JWKS file registered with EWS.
+    :type jwks_path: Path
+    :return: The key id to place in the client-assertion JWT header.
+    :rtype: str
+    :raises ValueError: If the file is missing, unparsable, or holds no signing key with a kid.
+    """
+
+    if not jwks_path.is_file():
+        raise ValueError(
+            f"signing_kid is not set and no JWKS file exists at {jwks_path} — set "
+            "ZELLE_SIGNING_KID explicitly or place the registered JWKS file there.",
+        )
+    # endIf
+    try:
+        document = json.loads(jwks_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise ValueError(
+            f"JWKS file {jwks_path} is unreadable or not valid JSON: {error}",
+        ) from error
+    # endTryExcept
+    keys = document.get("keys", [document]) if isinstance(document, dict) else []
+    for key in keys:
+        if not isinstance(key, dict) or key.get("use", "sig") != "sig":
+            continue
+        # endIf
+        kid = key.get("kid")
+        if isinstance(kid, str) and kid:
+            # kid is loggable token metadata (never the key material itself).
+            LOGGER.info("signing_kid loaded from JWKS file %s: kid=%s", jwks_path, kid)
+            return kid
+        # endIf
+    # endFor
+    raise ValueError(f"JWKS file {jwks_path} contains no signing key with a kid.")
+# endDef
 
 
 class ZelleSettings(BaseSettings):
@@ -159,10 +229,7 @@ class ZelleSettings(BaseSettings):
         """
 
         if isinstance(data, dict):
-            is_production = data.get("is_production", False)
-            if isinstance(is_production, str):
-                is_production = is_production.strip().lower() in {"1", "true", "yes", "on"}
-            # endIf
+            is_production = _coerce_production_flag(data.get("is_production", False))
             if not data.get("api_base_url"):
                 data["api_base_url"] = PROD_API_BASE_URL if is_production else CAT_API_BASE_URL
             # endIf
@@ -172,6 +239,31 @@ class ZelleSettings(BaseSettings):
             if not data.get("token_aud"):
                 data["token_aud"] = PROD_TOKEN_AUD if is_production else CAT_TOKEN_AUD
             # endIf
+        # endIf
+        return data
+    # endDef
+
+    @model_validator(mode="before")
+    @classmethod
+    def _default_signing_kid(cls, data: Any) -> Any:
+
+        """
+        Fill ``signing_kid`` from the environment's registered JWKS file when the caller did not
+        set it explicitly: production reads ``PROD_JWKS_FILENAME``, everything else
+        ``CAT_JWKS_FILENAME``, both under ``JWKS_DIR``. An explicit value (env var or kwarg)
+        always wins, so tests and stub deployments are untouched.
+
+        :param data: The raw input mapping before field validation.
+        :type data: Any
+        :return: The possibly-augmented input mapping.
+        :rtype: Any
+        :raises ValueError: If no explicit kid is given and the JWKS file is missing or invalid.
+        """
+
+        if isinstance(data, dict) and not data.get("signing_kid"):
+            is_production = _coerce_production_flag(data.get("is_production", False))
+            filename = PROD_JWKS_FILENAME if is_production else CAT_JWKS_FILENAME
+            data["signing_kid"] = _read_signing_kid(JWKS_DIR / filename)
         # endIf
         return data
     # endDef
