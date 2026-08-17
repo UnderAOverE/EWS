@@ -195,6 +195,20 @@ class ZelleSettings(BaseSettings):
     # falls back to client_allowlist.
     client_allowlist: list[str] = []
     lifecycle_client_allowlist: list[str] = []
+    # Employee directory (GlobalDirectory) enrichment: when a base URL is set and the consumer
+    # sends Sm-User, the schedule contact block and the notification recipient come from the
+    # directory (GET {base}/{username}); any failure falls back to the configured defaults and
+    # is noted in the audit trail and the notification email. None disables enrichment.
+    employee_api_base_url: str | None = None
+    employee_api_connect_timeout_seconds: float = 2.0
+    employee_api_read_timeout_seconds: float = 4.0
+    employee_cache_ttl_seconds: float = 600.0
+    # Minimum whole days between "now" and a requested startTime (facade guardrail, checked at
+    # schedule time; EWS applies its own lead-time tiers independently). 0 disables the rule —
+    # set ZELLE_MIN_SCHEDULE_LEAD_DAYS per environment.
+    min_schedule_lead_days: int = 0
+    # Master switch for the per-attempt rich-HTML notification emails.
+    notification_emails_enabled: bool = True
     # Timeouts / broker.
     token_connect_timeout_seconds: float = 3.0
     token_read_timeout_seconds: float = 7.0

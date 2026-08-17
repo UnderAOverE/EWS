@@ -120,8 +120,15 @@ class ScheduleEventRequest(BaseModel):
         if self.end_time <= self.start_time:
             raise ValueError("endTime must be after startTime")
         # endIf
-        if self.start_time < datetime.now(timezone.utc) - START_TIME_PAST_GRACE:
-            raise ValueError("startTime must not be in the past")
+        now = datetime.now(timezone.utc)
+        if self.start_time < now - START_TIME_PAST_GRACE:
+            # Spell out both instants in UTC: the classic mistake is local wall-clock digits
+            # with a 'Z' suffix (Z = UTC), which silently shifts the moment hours earlier.
+            raise ValueError(
+                f"startTime {self.start_time.astimezone(timezone.utc).isoformat()} is in the "
+                f"past (now {now.isoformat()} UTC). Note 'Z' means UTC — use your local offset "
+                "(e.g. -05:00) if you meant local time.",
+            )
         # endIf
         return self
     # endDef

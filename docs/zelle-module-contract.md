@@ -54,6 +54,8 @@ src/apis/services/__init__.py                 (slice C)
 src/apis/services/zelle/__init__.py           (slice C)
 src/apis/services/zelle/token_broker.py       (slice C)  CircuitBreaker, TokenBroker
 src/apis/services/zelle/zoms_client.py        (slice C)  ZomsClient
+src/apis/services/zelle/notifications.py      (slice D)  EmailSender, NotificationService
+src/common/employee_directory.py              (mirror)   EmployeeRecord, EmployeeDirectoryClient
 src/apis/services/zelle/event_service.py      (slice D)  EventService
 src/apis/services/zelle/watchdog.py           (slice D)  Watchdog
 src/apis/routes/__init__.py                   (slice E)
@@ -409,16 +411,24 @@ class ScheduleResult:
     replayed: bool
 
 class EventService:
-    def __init__(self, settings, events, idempotency, audit, zoms) -> None
+    def __init__(self, settings, events, idempotency, audit, zoms,
+                 employee_lookup: EmployeeLookup | None = None,
+                 notifications: NotificationService | None = None) -> None
     async def schedule(self, request: ScheduleEventRequest, *, client_id: str,
-                       idempotency_key: str | None, correlation_id: str) -> ScheduleResult
+                       idempotency_key: str | None, correlation_id: str,
+                       sm_user: str | None = None) -> ScheduleResult
+    # ^ enforces min_schedule_lead_days; enriches the contact block from the directory for
+    #   sm_user (per-field fallback to config defaults, noted in audit + email); every attempt
+    #   (incl. failures and dry runs) sends a best-effort notification email
     async def lifecycle(self, event_id: str, action: LifecycleAction, *, client_id: str,
                         confirm_ticket: str, correlation_id: str,
-                        dry_run: bool = False) -> MaintenanceEventResponse
+                        dry_run: bool = False,
+                        sm_user: str | None = None) -> MaintenanceEventResponse
     async def get_event(self, event_id: str, *, correlation_id: str) -> MaintenanceEventResponse
     async def list_events(self, status: EventStatus | None, *, correlation_id: str) -> EventListResponse
     async def resolve(self, event_id: str, request: ResolveRequest, *, client_id: str,
-                      correlation_id: str) -> MaintenanceEventResponse
+                      correlation_id: str,
+                      sm_user: str | None = None) -> MaintenanceEventResponse
     async def upstream_status(self, event_id: str, *, client_id: str,
                               correlation_id: str) -> UpstreamStatusResponse
     # ^ live southbound read: 404 unknown event, 409 when ews_event_id is None;
@@ -526,8 +536,8 @@ async def require_client_id(request: Request, x_client_id: str | None = Header(N
 
 | Route | Handler notes |
 |---|---|
-| `POST ""` | headers: X-Client-Id (required), Idempotency-Key (optional), X-Correlation-Id (optional). Returns JSONResponse with `result.status_code`; body `MaintenanceEventResponse` by_alias. |
-| `POST "/{event_id}/start"`, `"/complete"`, `"/cancel"` | header X-Confirm-Ticket (required) + X-Client-Id; query `dry_run: bool = False`; 200. |
+| `POST ""` | headers: X-Client-Id (required), Idempotency-Key (optional), X-Correlation-Id (optional), Sm-User (optional; SSO user for contact enrichment + notification recipient). Returns JSONResponse with `result.status_code`; body `MaintenanceEventResponse` by_alias. |
+| `POST "/{event_id}/start"`, `"/complete"`, `"/cancel"` | header X-Confirm-Ticket (required) + X-Client-Id + Sm-User (optional); query `dry_run: bool = False`; 200. |
 | `GET ""` | query `status: EventStatus | None`; 200 EventListResponse. |
 | `GET "/queue-depths"` | live southbound count read; 200 QueueDepthsResponse; 502 / 503. Registered BEFORE `/{event_id}` (literal beats param only by registration order). |
 | `GET "/{event_id}"` | 200 MaintenanceEventResponse. |

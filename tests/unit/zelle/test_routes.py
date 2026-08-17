@@ -213,6 +213,47 @@ async def test_schedule_start_complete_end_to_end(consumer: httpx.AsyncClient) -
 # endDef
 
 
+async def test_schedule_accepts_offset_datetimes(consumer: httpx.AsyncClient) -> None:
+
+    """
+    Regression (AMP frontend): startTime/endTime with a numeric UTC offset (e.g. ``-05:00``)
+    are accepted exactly like the ``Z`` form — both are valid ISO-8601 aware datetimes.
+    """
+
+    start = datetime.now(timezone.utc) + timedelta(hours=1)
+    end = start + timedelta(hours=2)
+    body = {
+        "startTime": start.astimezone(timezone(timedelta(hours=-5))).isoformat(),
+        "endTime": end.astimezone(timezone(timedelta(hours=-5))).isoformat(),
+        "ticketNumber": TICKET,
+        "reason": "offset-form window",
+    }
+    response = await consumer.post(
+        EVENTS_PATH,
+        json=body,
+        headers={"X-Client-Id": CLIENT_ID},
+    )
+    assert response.status_code == 201, response.text
+    assert response.json()["status"] == "SCHEDULED"
+# endDef
+
+
+async def test_schedule_accepts_sm_user_header(consumer: httpx.AsyncClient) -> None:
+
+    """
+    The Sm-User header threads through schedule without a configured directory: the request
+    succeeds on the configured default contact block.
+    """
+
+    response = await consumer.post(
+        EVENTS_PATH,
+        json=_schedule_body(),
+        headers={"X-Client-Id": CLIENT_ID, "Sm-User": "sreddy"},
+    )
+    assert response.status_code == 201, response.text
+# endDef
+
+
 async def test_correlation_id_echoed(consumer: httpx.AsyncClient) -> None:
 
     """

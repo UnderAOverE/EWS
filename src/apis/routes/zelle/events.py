@@ -214,6 +214,7 @@ async def _run_lifecycle(
     service: EventService,
     x_confirm_ticket: str | None,
     dry_run: bool,
+    sm_user: str | None,
     ) -> JSONResponse:
 
     """
@@ -234,6 +235,8 @@ async def _run_lifecycle(
     :type x_confirm_ticket: str | None
     :param dry_run: When True the service audits without calling EWS or transitioning.
     :type dry_run: bool
+    :param sm_user: The SSO username (``Sm-User``); drives the notification recipient.
+    :type sm_user: str | None
     :return: The 200 response with the consumer event view.
     :rtype: JSONResponse
     :raises ValidationFailedError: When the confirmation header is missing or blank.
@@ -243,10 +246,11 @@ async def _run_lifecycle(
         raise ValidationFailedError("X-Confirm-Ticket header is required.")
     # endIf
     logger.info(
-        "lifecycle %s event_id=%s client_id=%s dry_run=%s",
+        "lifecycle %s event_id=%s client_id=%s sm_user=%s dry_run=%s",
         action.value,
         event_id,
         client_id,
+        sm_user,
         dry_run,
     )
     response = await service.lifecycle(
@@ -256,6 +260,7 @@ async def _run_lifecycle(
         confirm_ticket=x_confirm_ticket,
         correlation_id=correlation_id,
         dry_run=dry_run,
+        sm_user=sm_user,
     )
     return JSONResponse(
         status_code=LIFECYCLE_SUCCESS_STATUS,
@@ -278,6 +283,7 @@ async def schedule_event(
     client_id: ZelleClientIdDependency,
     service: ZelleEventServiceDependency,
     idempotency_key: str | None = Header(None),
+    sm_user: str | None = Header(None),
     ) -> JSONResponse:
 
     """
@@ -294,13 +300,17 @@ async def schedule_event(
     :type service: EventService
     :param idempotency_key: Optional consumer ``Idempotency-Key`` enabling safe replay.
     :type idempotency_key: str | None
+    :param sm_user: The SSO username set by the AMP gateway (``Sm-User``); drives contact
+        enrichment and the notification recipient.
+    :type sm_user: str | None
     :return: The consumer event view with the service-decided status code.
     :rtype: JSONResponse
     """
 
     logger.info(
-        "schedule request client_id=%s idempotency_key=%s correlation_id=%s",
+        "schedule request client_id=%s sm_user=%s idempotency_key=%s correlation_id=%s",
         client_id,
+        sm_user,
         idempotency_key,
         correlation_id,
     )
@@ -309,6 +319,7 @@ async def schedule_event(
         client_id=client_id,
         idempotency_key=idempotency_key,
         correlation_id=correlation_id,
+        sm_user=sm_user,
     )
     return JSONResponse(
         status_code=result.status_code,
@@ -331,6 +342,7 @@ async def start_event(
     service: ZelleEventServiceDependency,
     x_confirm_ticket: str | None = Header(None),
     dry_run: bool = False,
+    sm_user: str | None = Header(None),
     ) -> JSONResponse:
 
     """
@@ -348,6 +360,8 @@ async def start_event(
     :type x_confirm_ticket: str | None
     :param dry_run: When true, audit the attempt without calling EWS or transitioning.
     :type dry_run: bool
+    :param sm_user: The SSO username (``Sm-User``); drives the notification recipient.
+    :type sm_user: str | None
     :return: The consumer event view.
     :rtype: JSONResponse
     """
@@ -360,6 +374,7 @@ async def start_event(
         service=service,
         x_confirm_ticket=x_confirm_ticket,
         dry_run=dry_run,
+        sm_user=sm_user,
     )
 # endDef
 
@@ -377,6 +392,7 @@ async def complete_event(
     service: ZelleEventServiceDependency,
     x_confirm_ticket: str | None = Header(None),
     dry_run: bool = False,
+    sm_user: str | None = Header(None),
     ) -> JSONResponse:
 
     """
@@ -394,6 +410,8 @@ async def complete_event(
     :type x_confirm_ticket: str | None
     :param dry_run: When true, audit the attempt without calling EWS or transitioning.
     :type dry_run: bool
+    :param sm_user: The SSO username (``Sm-User``); drives the notification recipient.
+    :type sm_user: str | None
     :return: The consumer event view.
     :rtype: JSONResponse
     """
@@ -406,6 +424,7 @@ async def complete_event(
         service=service,
         x_confirm_ticket=x_confirm_ticket,
         dry_run=dry_run,
+        sm_user=sm_user,
     )
 # endDef
 
@@ -423,6 +442,7 @@ async def cancel_event(
     service: ZelleEventServiceDependency,
     x_confirm_ticket: str | None = Header(None),
     dry_run: bool = False,
+    sm_user: str | None = Header(None),
     ) -> JSONResponse:
 
     """
@@ -440,6 +460,8 @@ async def cancel_event(
     :type x_confirm_ticket: str | None
     :param dry_run: When true, audit the attempt without calling EWS or transitioning.
     :type dry_run: bool
+    :param sm_user: The SSO username (``Sm-User``); drives the notification recipient.
+    :type sm_user: str | None
     :return: The consumer event view.
     :rtype: JSONResponse
     """
@@ -452,6 +474,7 @@ async def cancel_event(
         service=service,
         x_confirm_ticket=x_confirm_ticket,
         dry_run=dry_run,
+        sm_user=sm_user,
     )
 # endDef
 

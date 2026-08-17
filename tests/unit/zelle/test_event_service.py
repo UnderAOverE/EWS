@@ -51,8 +51,10 @@ from src.apis.models.zelle.errors import (
     ConflictError,
     ForbiddenActionError,
     NotFoundError,
+    UpstreamRejectedError,
     UpstreamUnavailableError,
     UpstreamUncertainError,
+    ValidationFailedError,
 )
 from src.apis.models.zelle.northbound import ResolveRequest, ScheduleEventRequest
 from src.apis.models.zelle.southbound import (
@@ -64,6 +66,8 @@ from src.apis.repositories.zelle.audit import get_audit_repository
 from src.apis.repositories.zelle.events import get_events_repository
 from src.apis.repositories.zelle.idempotency import get_idempotency_repository
 from src.apis.services.zelle.event_service import EventService
+from src.apis.services.zelle.notifications import NotificationService
+from src.common.employee_directory import EmployeeRecord
 
 # Local variables
 
@@ -899,6 +903,298 @@ async def test_upstream_status_unknown_event_not_found(harness: SimpleNamespace)
             correlation_id="c-1",
         )
     # endWith
+# endDef
+
+
+class _FakeEmployeeLookup:
+
+    """
+    Duck-typed EmployeeLookup: returns a configured record (or None) and records requests.
+    """
+
+    def __init__(self, record: EmployeeRecord | None) -> None:
+
+        """
+        Store the configured result.
+        """
+
+        self.record = record
+        self.requested: list[str] = []
+    # endDef
+
+    async def get_employee(self, username: str) -> EmployeeRecord | None:
+
+        """
+        Record the request and return the configured result.
+        """
+
+        self.requested.append(username)
+        return self.record
+    # endDef
+# endClass
+
+
+class _RecordingSender:
+
+    """
+    Duck-typed EmailSender: records sends, or raises when configured to fail.
+    """
+
+    def __init__(self, fail: bool = False) -> None:
+
+        """
+        Store the failure switch.
+        """
+
+        self.fail = fail
+        self.sent: list[tuple[str, str, str]] = []
+    # endDef
+
+    async def send_email(self, to: str, subject: str, html_body: str) -> None:
+
+        """
+        Record the send or raise the configured failure.
+        """
+
+        if self.fail:
+            raise RuntimeError("smtp down")
+        # endIf
+        self.sent.append((to, subject, html_body))
+    # endDef
+# endClass
+
+
+def _enriched_service(
+    harness: SimpleNamespace,
+    lookup: _FakeEmployeeLookup | None,
+    sender: _RecordingSender | None,
+    settings: ZelleSettings | None = None,
+    ) -> EventService:
+
+    """
+    Build an EventService with directory enrichment and/or notifications wired.
+
+    :param harness: The repository/zoms harness fixture value.
+    :type harness: SimpleNamespace
+    :param lookup: The fake directory lookup, or None.
+    :type lookup: _FakeEmployeeLookup | None
+    :param sender: The recording email sender, or None to disable notifications.
+    :type sender: _RecordingSender | None
+    :param settings: Settings override; None uses the harness settings.
+    :type settings: ZelleSettings | None
+    :return: The wired service.
+    :rtype: EventService
+    """
+
+    effective = settings if settings is not None else harness.settings
+    notifications = (
+        NotificationService(sender, effective) if sender is not None else None
+    )
+    return EventService(
+        effective,
+        harness.events,
+        harness.idempotency,
+        harness.audit,
+        harness.zoms,  # type: ignore[arg-type]
+        employee_lookup=lookup,
+        notifications=notifications,
+    )
+# endDef
+
+
+async def test_schedule_enriches_contact_block_from_directory(
+    harness: SimpleNamespace,
+    ) -> None:
+
+    """
+    With Sm-User and a directory hit, the southbound contact block carries the employee's
+    name/phone/email (phone normalized to digits) and the notification goes to the employee.
+    """
+
+    lookup = _FakeEmployeeLookup(
+        EmployeeRecord(
+            name="Shane Reddy",
+            emailAddress="sreddy@bank.com",
+            phone="+1 (555) 123-4567",
+        ),
+    )
+    sender = _RecordingSender()
+    service = _enriched_service(harness, lookup, sender)
+    result = await service.schedule(
+        _request(),
+        client_id=CLIENT_ID,
+        idempotency_key=None,
+        correlation_id="c-1",
+        sm_user="sreddy",
+    )
+    assert result.status_code == 201
+    assert lookup.requested == ["sreddy"]
+    stored = await harness.events.get(result.response.event_id)
+    assert stored is not None
+    snapshot = stored.payload_snapshot
+    assert snapshot["submittedName"] == "Shane Reddy"
+    assert snapshot["contactName"] == "Shane Reddy"
+    assert snapshot["contactPhone"] == "15551234567"
+    assert snapshot["contactEmail"] == "sreddy@bank.com"
+    assert len(sender.sent) == 1
+    to, subject, html = sender.sent[0]
+    assert to == "sreddy@bank.com"
+    assert "SCHEDULE" in subject
+    assert "SCHEDULED" in subject
+    assert "sreddy" in html
+# endDef
+
+
+async def test_schedule_falls_back_when_user_not_found(harness: SimpleNamespace) -> None:
+
+    """
+    A directory miss falls back to the configured defaults, notes it in the audit trail and the
+    email, and still schedules successfully — the directory must never block a schedule.
+    """
+
+    lookup = _FakeEmployeeLookup(None)
+    sender = _RecordingSender()
+    service = _enriched_service(harness, lookup, sender)
+    result = await service.schedule(
+        _request(),
+        client_id=CLIENT_ID,
+        idempotency_key=None,
+        correlation_id="c-1",
+        sm_user="ghost01",
+    )
+    assert result.status_code == 201
+    stored = await harness.events.get(result.response.event_id)
+    assert stored is not None
+    assert stored.payload_snapshot["contactEmail"] == harness.settings.contact_email
+    assert stored.payload_snapshot["submittedName"] == harness.settings.submitted_name
+    to, _subject, html = sender.sent[0]
+    assert to == harness.settings.contact_email
+    assert "not found in GlobalDirectory" in html
+    audit_docs = await harness.audit._collection.find({}).to_list(10)
+    assert any(
+        "not found in GlobalDirectory" in (doc.get("detail_redacted") or "")
+        for doc in audit_docs
+    )
+# endDef
+
+
+async def test_schedule_minimum_lead_days_rejected(harness: SimpleNamespace) -> None:
+
+    """
+    With min_schedule_lead_days=1, a window starting in an hour is rejected 422 before any
+    ledger write or southbound call.
+    """
+
+    strict = harness.settings.model_copy(update={"min_schedule_lead_days": 1})
+    service = _enriched_service(harness, None, None, settings=strict)
+    with pytest.raises(ValidationFailedError):
+        await service.schedule(
+            _request(hours_from_now=1.0),
+            client_id=CLIENT_ID,
+            idempotency_key=None,
+            correlation_id="c-1",
+        )
+    # endWith
+    assert harness.zoms.calls == []
+# endDef
+
+
+async def test_schedule_minimum_lead_days_allows_far_window(
+    harness: SimpleNamespace,
+    ) -> None:
+
+    """
+    The same rule admits a window beyond the minimum lead.
+    """
+
+    strict = harness.settings.model_copy(update={"min_schedule_lead_days": 1})
+    service = _enriched_service(harness, None, None, settings=strict)
+    result = await service.schedule(
+        _request(hours_from_now=48.0),
+        client_id=CLIENT_ID,
+        idempotency_key=None,
+        correlation_id="c-1",
+    )
+    assert result.status_code == 201
+# endDef
+
+
+async def test_email_failure_never_breaks_the_api_call(harness: SimpleNamespace) -> None:
+
+    """
+    A failing email egress is logged and swallowed; the schedule still succeeds.
+    """
+
+    sender = _RecordingSender(fail=True)
+    service = _enriched_service(harness, None, sender)
+    result = await service.schedule(
+        _request(),
+        client_id=CLIENT_ID,
+        idempotency_key=None,
+        correlation_id="c-1",
+        sm_user="sreddy",
+    )
+    assert result.status_code == 201
+# endDef
+
+
+async def test_failed_attempt_still_sends_notification(harness: SimpleNamespace) -> None:
+
+    """
+    An EWS rejection re-raises to the consumer AND produces a notification email stating the
+    REJECTED outcome — every attempt gets an email.
+    """
+
+    harness.zoms.schedule_error = UpstreamRejectedError("EWS rejected the schedule request.")
+    sender = _RecordingSender()
+    service = _enriched_service(harness, None, sender)
+    with pytest.raises(UpstreamRejectedError):
+        await service.schedule(
+            _request(),
+            client_id=CLIENT_ID,
+            idempotency_key=None,
+            correlation_id="c-1",
+            sm_user="sreddy",
+        )
+    # endWith
+    assert len(sender.sent) == 1
+    _to, subject, _html = sender.sent[0]
+    assert "REJECTED" in subject
+# endDef
+
+
+async def test_lifecycle_attempt_sends_notification(harness: SimpleNamespace) -> None:
+
+    """
+    A successful start emails the acting user with the resulting IN_PROGRESS status.
+    """
+
+    lookup = _FakeEmployeeLookup(
+        EmployeeRecord(name="Shane Reddy", emailAddress="sreddy@bank.com", phone="5551234567"),
+    )
+    sender = _RecordingSender()
+    service = _enriched_service(harness, lookup, sender)
+    scheduled = await service.schedule(
+        _request(),
+        client_id=CLIENT_ID,
+        idempotency_key=None,
+        correlation_id="c-1",
+        sm_user="sreddy",
+    )
+    sender.sent.clear()
+    await service.lifecycle(
+        scheduled.response.event_id,
+        LifecycleAction.START,
+        client_id=CLIENT_ID,
+        confirm_ticket=TICKET,
+        correlation_id="c-2",
+        sm_user="sreddy",
+    )
+    assert len(sender.sent) == 1
+    to, subject, _html = sender.sent[0]
+    assert to == "sreddy@bank.com"
+    assert "START" in subject
+    assert "IN_PROGRESS" in subject
 # endDef
 
 

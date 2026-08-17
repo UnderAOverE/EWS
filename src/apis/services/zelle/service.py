@@ -54,9 +54,11 @@ from src.apis.repositories.zelle.idempotency import (
 )
 from src.apis.repositories.zelle.leases import LeaseRepository, get_leases_repository
 from src.apis.services.zelle.event_service import EventService
+from src.apis.services.zelle.notifications import EmailSender, NotificationService
 from src.apis.services.zelle.token_broker import TokenBroker
 from src.apis.services.zelle.watchdog import AlertSender, Watchdog
 from src.apis.services.zelle.zoms_client import ZomsClient
+from src.common.employee_directory import EmployeeDirectoryClient
 from src.common.logger import logger
 
 # Local variables
@@ -157,6 +159,8 @@ class ZelleService:
         leases: LeaseRepository,
         event_service: EventService,
         watchdog: Watchdog | None,
+        internal_http_client: httpx.AsyncClient | None = None,
+        owns_internal_http_client: bool = False,
         ) -> None:
 
         """
@@ -184,6 +188,12 @@ class ZelleService:
         :type event_service: EventService
         :param watchdog: The stuck-event watchdog, or None when disabled.
         :type watchdog: Watchdog | None
+        :param internal_http_client: The internal-network client for the employee directory,
+            or None when enrichment is disabled.
+        :type internal_http_client: httpx.AsyncClient | None
+        :param owns_internal_http_client: True when this service built that client and must
+            close it.
+        :type owns_internal_http_client: bool
         """
 
         self.settings = settings
@@ -197,6 +207,8 @@ class ZelleService:
         self.leases = leases
         self.event_service = event_service
         self.watchdog = watchdog
+        self.internal_http_client = internal_http_client
+        self.owns_internal_http_client = owns_internal_http_client
         self._watchdog_task: asyncio.Task[None] | None = None
     # endDef
 
@@ -207,6 +219,8 @@ class ZelleService:
         email_service: AlertSender | None = None,
         settings: ZelleSettings | None = None,
         http_client: httpx.AsyncClient | None = None,
+        notification_sender: EmailSender | None = None,
+        internal_http_client: httpx.AsyncClient | None = None,
         ) -> Self:
 
         """
@@ -214,7 +228,10 @@ class ZelleService:
         to the module-level :func:`get_zelle_settings` (like the host's ``environment_settings``) —
         inject them only to override (tests, or to pass ``is_production`` directly). The database is
         selected by ``settings.mongo_database_name``; the southbound mTLS HTTP client is built from
-        settings unless one is injected (tests pass a fake-EWS client, production omits it).
+        settings unless one is injected (tests pass a fake-EWS client, production omits it). When
+        ``settings.employee_api_base_url`` is set, an employee directory client is wired on a
+        SEPARATE internal-network HTTP client (never the EWS-proxied southbound one); when
+        ``notification_sender`` is provided, per-attempt notification emails are enabled.
 
         :param mongo_client: The Motor client backing the repositories.
         :type mongo_client: AsyncIOMotorClient[dict[str, Any]]
@@ -224,6 +241,12 @@ class ZelleService:
         :type settings: ZelleSettings | None
         :param http_client: An HTTP client to use; None (production) builds and owns an mTLS one.
         :type http_client: httpx.AsyncClient | None
+        :param notification_sender: The host email egress for per-attempt notification emails
+            (rich HTML, per-recipient), or None to disable them.
+        :type notification_sender: EmailSender | None
+        :param internal_http_client: The internal-network client for directory lookups; None
+            builds and owns a plain one when enrichment is configured.
+        :type internal_http_client: httpx.AsyncClient | None
         :return: The wired service instance.
         :rtype: Self
         """
@@ -241,17 +264,50 @@ class ZelleService:
         idempotency = await get_idempotency_repository(mongo_client)
         audit = await get_audit_repository(mongo_client)
         leases = await get_leases_repository(mongo_client)
-        event_service = EventService(settings, events, idempotency, audit, zoms_client)
+        employee_lookup: EmployeeDirectoryClient | None = None
+        owns_internal_http_client = False
+        if settings.employee_api_base_url:
+            if internal_http_client is None:
+                # Plain internal-network client: the directory must NOT ride the EWS egress
+                # proxy or present the EWS mTLS identity.
+                internal_http_client = httpx.AsyncClient()
+                owns_internal_http_client = True
+            # endIf
+            employee_lookup = EmployeeDirectoryClient(
+                settings.employee_api_base_url,
+                internal_http_client,
+                connect_timeout_seconds=settings.employee_api_connect_timeout_seconds,
+                read_timeout_seconds=settings.employee_api_read_timeout_seconds,
+                cache_ttl_seconds=settings.employee_cache_ttl_seconds,
+            )
+        # endIf
+        notifications = (
+            NotificationService(notification_sender, settings)
+            if notification_sender is not None
+            else None
+        )
+        event_service = EventService(
+            settings,
+            events,
+            idempotency,
+            audit,
+            zoms_client,
+            employee_lookup=employee_lookup,
+            notifications=notifications,
+        )
         watchdog = (
             Watchdog(settings, events, leases, email_service)
             if settings.watchdog_enabled
             else None
         )
         logger.info(
-            "zelle service built (is_production=%s watchdog_enabled=%s owns_http_client=%s)",
+            "zelle service built (is_production=%s watchdog_enabled=%s owns_http_client=%s "
+            "enrichment=%s notifications=%s)",
             settings.is_production,
             settings.watchdog_enabled,
             owns_http_client,
+            employee_lookup is not None,
+            notifications is not None,
         )
         return cls(
             settings=settings,
@@ -265,6 +321,8 @@ class ZelleService:
             leases=leases,
             event_service=event_service,
             watchdog=watchdog,
+            internal_http_client=internal_http_client,
+            owns_internal_http_client=owns_internal_http_client,
         )
     # endDef
 
@@ -318,6 +376,9 @@ class ZelleService:
         # endIf
         if self.owns_http_client:
             await self.http_client.aclose()
+        # endIf
+        if self.owns_internal_http_client and self.internal_http_client is not None:
+            await self.internal_http_client.aclose()
         # endIf
     # endDef
 # endClass

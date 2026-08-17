@@ -35,7 +35,7 @@ sys.dont_write_bytecode = True
 
 # External imports
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Header
 from fastapi.responses import JSONResponse
 
 # Internal imports
@@ -101,6 +101,7 @@ async def resolve_event(
     correlation_id: ZelleCorrelationIdDependency,
     client_id: ZelleClientIdDependency,
     service: ZelleEventServiceDependency,
+    sm_user: str | None = Header(None),
     ) -> JSONResponse:
 
     """
@@ -117,6 +118,8 @@ async def resolve_event(
     :type client_id: str
     :param service: The event orchestration service.
     :type service: EventService
+    :param sm_user: The SSO username (``Sm-User``); drives the notification recipient.
+    :type sm_user: str | None
     :return: The consumer view of the resolved event.
     :rtype: JSONResponse
     """
@@ -132,6 +135,7 @@ async def resolve_event(
         payload,
         client_id=client_id,
         correlation_id=correlation_id,
+        sm_user=sm_user,
     )
     return JSONResponse(
         status_code=HTTPCodes.HTTP_SUCCESS,

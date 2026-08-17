@@ -38,10 +38,11 @@ sys.dont_write_bytecode = True
 
 import hashlib
 import json
+import re
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 # Internal imports
 
@@ -62,6 +63,7 @@ from src.apis.models.zelle.errors import (
     UpstreamRejectedError,
     UpstreamUnavailableError,
     UpstreamUncertainError,
+    ValidationFailedError,
 )
 from src.apis.models.zelle.northbound import (
     EventListResponse,
@@ -77,13 +79,23 @@ from src.apis.models.zelle.southbound import EwsScheduleRequest, format_ews_date
 from src.apis.repositories.zelle.audit import AuditRepository
 from src.apis.repositories.zelle.events import EventsRepository
 from src.apis.repositories.zelle.idempotency import IdempotencyRepository
+from src.apis.services.zelle.notifications import NotificationService
 from src.apis.services.zelle.zoms_client import ZomsClient
+from src.common.employee_directory import EmployeeLookup
 from src.common.logger import logger
 
 # Local variables
 
 SCHEDULE_ACTION = "schedule"
 RESOLVE_ACTION = "resolve"
+# EWS wire limits for the contact block (docs/zoms-api-reference.md §3.1): directory values
+# outside these bounds fall back per-field to the configured defaults.
+SUBMITTED_NAME_MAX = 50
+CONTACT_NAME_MAX = 128
+CONTACT_EMAIL_MAX = 255
+CONTACT_PHONE_MIN_DIGITS = 9
+CONTACT_PHONE_MAX_DIGITS = 12
+NON_DIGIT_PATTERN = re.compile(r"\D")
 # EWS success codes per docs/zoms-api-reference.md: schedule 201, lifecycle verbs 200.
 EWS_SCHEDULE_SUCCESS_STATUS = 201
 EWS_LIFECYCLE_SUCCESS_STATUS = 200
@@ -158,6 +170,92 @@ def _canonical_body_hash(request: ScheduleEventRequest) -> str:
 # endDef
 
 
+def _sanitize_name(raw: str | None, max_length: int) -> str | None:
+
+    """
+    Trim and clamp a directory name field to an EWS length rule.
+
+    :param raw: The raw directory value, possibly None/blank.
+    :type raw: str | None
+    :param max_length: The EWS maximum length for the target field.
+    :type max_length: int
+    :return: A usable value, or None to fall back to the configured default.
+    :rtype: str | None
+    """
+
+    if raw is None:
+        return None
+    # endIf
+    cleaned = raw.strip()
+    if not cleaned:
+        return None
+    # endIf
+    return cleaned[:max_length]
+# endDef
+
+
+def _sanitize_phone(raw: str | None) -> str | None:
+
+    """
+    Normalize a directory phone to bare digits and enforce the EWS 9–12 digit rule. Digits are
+    never trimmed to fit — a truncated phone number is a wrong phone number.
+
+    :param raw: The raw directory value (may carry +, spaces, punctuation).
+    :type raw: str | None
+    :return: The digit string, or None to fall back to the configured default.
+    :rtype: str | None
+    """
+
+    if raw is None:
+        return None
+    # endIf
+    digits = NON_DIGIT_PATTERN.sub("", raw)
+    if CONTACT_PHONE_MIN_DIGITS <= len(digits) <= CONTACT_PHONE_MAX_DIGITS:
+        return digits
+    # endIf
+    return None
+# endDef
+
+
+def _sanitize_email(raw: str | None) -> str | None:
+
+    """
+    Trim a directory email and enforce shape/length sanity.
+
+    :param raw: The raw directory value.
+    :type raw: str | None
+    :return: A usable address, or None to fall back to the configured default.
+    :rtype: str | None
+    """
+
+    if raw is None:
+        return None
+    # endIf
+    cleaned = raw.strip()
+    if "@" not in cleaned or len(cleaned) > CONTACT_EMAIL_MAX:
+        return None
+    # endIf
+    return cleaned
+# endDef
+
+
+@dataclass
+class ContactBlock:
+
+    """
+    The effective contact block for one attempt: the four EWS contact fields (directory-
+    enriched where possible, configured defaults otherwise) plus a human-readable note when
+    any fallback happened — surfaced in the audit trail and the notification email.
+    """
+
+    submitted_name: str
+    contact_name: str
+    contact_phone: str
+    contact_email: str
+    source_note: str | None
+# endClass
+
+
 @dataclass
 class ScheduleResult:
 
@@ -189,6 +287,8 @@ class EventService:
         idempotency: IdempotencyRepository,
         audit: AuditRepository,
         zoms: ZomsClient,
+        employee_lookup: EmployeeLookup | None = None,
+        notifications: NotificationService | None = None,
         ) -> None:
 
         """
@@ -204,6 +304,11 @@ class EventService:
         :type audit: AuditRepository
         :param zoms: Southbound EWS client adapter.
         :type zoms: ZomsClient
+        :param employee_lookup: Directory port resolving Sm-User to contact details; None
+            disables enrichment (configured defaults are used).
+        :type employee_lookup: EmployeeLookup | None
+        :param notifications: Per-attempt email notifier; None disables notification email.
+        :type notifications: NotificationService | None
         """
 
         self._settings = settings
@@ -211,6 +316,8 @@ class EventService:
         self._idempotency = idempotency
         self._audit = audit
         self._zoms = zoms
+        self._employee_lookup = employee_lookup
+        self._notifications = notifications
     # endDef
 
     async def schedule(
@@ -220,10 +327,14 @@ class EventService:
         client_id: str,
         idempotency_key: str | None,
         correlation_id: str,
+        sm_user: str | None = None,
         ) -> ScheduleResult:
 
         """
-        Schedule a maintenance window with EWS, closing the idempotency race ledger-first.
+        Schedule a maintenance window with EWS, closing the idempotency race ledger-first. The
+        contact block is enriched from the employee directory for ``sm_user`` when configured
+        (falling back per-field to the configured defaults, with the fallback noted in audit
+        and email), and every attempt sends a notification email.
 
         :param request: Validated northbound schedule request.
         :type request: ScheduleEventRequest
@@ -233,8 +344,12 @@ class EventService:
         :type idempotency_key: str | None
         :param correlation_id: Correlation id bound to this request.
         :type correlation_id: str
+        :param sm_user: The SSO username from ``Sm-User``; None when the caller has no SSO
+            context (service-to-service).
+        :type sm_user: str | None
         :return: The northbound response, route HTTP status, and replay flag.
         :rtype: ScheduleResult
+        :raises ValidationFailedError: If ``startTime`` violates the minimum lead-time rule.
         :raises ForbiddenActionError: If the caller is not in the client allowlist.
         :raises ConflictError: On window overlap, key reuse with a different body, or an
             in-flight key.
@@ -248,9 +363,11 @@ class EventService:
         """
 
         self._require_schedule_allowed(client_id)
+        self._require_minimum_lead(request.start_time)
         logger.info(
-            "schedule: client_id=%s ticket=%s idempotency_key=%s",
+            "schedule: client_id=%s sm_user=%s ticket=%s idempotency_key=%s",
             client_id,
+            sm_user,
             request.ticket_number,
             idempotency_key,
         )
@@ -285,7 +402,8 @@ class EventService:
             request.hold_mode if request.hold_mode is not None
             else self._settings.default_hold_mode
         )
-        payload = self._build_ews_payload(request, hold_mode)
+        contact = await self._resolve_contact_block(sm_user)
+        payload = self._build_ews_payload(request, hold_mode, contact)
         now = datetime.now(timezone.utc)
         record = EventRecord(
             event_id=str(uuid.uuid4()),
@@ -343,6 +461,8 @@ class EventService:
                 f"schedule ticket={record.ticket_number} "
                 f"window={record.scheduled_start.isoformat()}"
                 f"..{record.scheduled_end.isoformat()} hold={record.hold_mode.value}"
+                f" user={sm_user or '-'}"
+                + (f" | {contact.source_note}" if contact.source_note else "")
             ),
         )
         try:
@@ -366,6 +486,14 @@ class EventService:
                 EventStatus.PENDING,
                 EventStatus.UNCERTAIN,
             )
+            await self._notify_attempt(
+                action=SCHEDULE_ACTION,
+                status=EventStatus.UNCERTAIN.value,
+                contact=contact,
+                record=record,
+                sm_user=sm_user,
+                correlation_id=correlation_id,
+            )
             raise
         except (UpstreamUnavailableError, RateLimitedError) as exc:
             # Clean failure before execution: safe to mark FAILED and free the key for retry.
@@ -378,6 +506,14 @@ class EventService:
                 outcome=AuditOutcome.UNAVAILABLE,
                 detail=f"{type(exc).__name__}: {exc.message}",
             )
+            await self._notify_attempt(
+                action=SCHEDULE_ACTION,
+                status=AuditOutcome.UNAVAILABLE.value,
+                contact=contact,
+                record=record,
+                sm_user=sm_user,
+                correlation_id=correlation_id,
+            )
             raise
         except (UpstreamRejectedError, AuthConfigError) as exc:
             # Definite rejection: EWS answered without executing — FAILED, key freed.
@@ -389,6 +525,14 @@ class EventService:
                 idempotency_key=idempotency_key,
                 outcome=AuditOutcome.REJECTED,
                 detail=f"{type(exc).__name__}: {exc.message}",
+            )
+            await self._notify_attempt(
+                action=SCHEDULE_ACTION,
+                status=AuditOutcome.REJECTED.value,
+                contact=contact,
+                record=record,
+                sm_user=sm_user,
+                correlation_id=correlation_id,
             )
             raise
         # endTryExcept
@@ -433,6 +577,14 @@ class EventService:
                 status_code,
             )
         # endIf
+        await self._notify_attempt(
+            action=SCHEDULE_ACTION,
+            status=new_status.value,
+            contact=contact,
+            record=updated,
+            sm_user=sm_user,
+            correlation_id=correlation_id,
+        )
         return ScheduleResult(response=response, status_code=status_code, replayed=False)
     # endDef
 
@@ -445,6 +597,7 @@ class EventService:
         confirm_ticket: str,
         correlation_id: str,
         dry_run: bool = False,
+        sm_user: str | None = None,
         ) -> MaintenanceEventResponse:
 
         """
@@ -463,6 +616,8 @@ class EventService:
         :param dry_run: When True, audit the attempt (outcome DRY_RUN) and return the current
             state without calling EWS or transitioning.
         :type dry_run: bool
+        :param sm_user: The SSO username from ``Sm-User``; drives the notification recipient.
+        :type sm_user: str | None
         :return: The (possibly transitioned) consumer view of the event.
         :rtype: MaintenanceEventResponse
         :raises ForbiddenActionError: If the caller is not in the lifecycle allowlist.
@@ -499,6 +654,13 @@ class EventService:
                 f"requires {required.value}.",
             )
         # endIf
+        # Contact resolution serves the notification recipient only on lifecycle verbs (the
+        # contact block itself goes southbound only on schedule) — skip it when mail is off.
+        contact = (
+            await self._resolve_contact_block(sm_user)
+            if self._notifications is not None
+            else None
+        )
         if dry_run:
             # Dry run is audited (paired INTENT/OUTCOME) but never calls EWS or transitions.
             attempt_id = await self._record_intent(
@@ -506,7 +668,8 @@ class EventService:
                 correlation_id=correlation_id,
                 event_id=event.event_id,
                 action=action.value,
-                detail=f"dry run: {action.value} ticket={event.ticket_number}",
+                detail=f"dry run: {action.value} ticket={event.ticket_number} "
+                f"user={sm_user or '-'}",
             )
             await self._record_outcome(
                 attempt_id=attempt_id,
@@ -517,7 +680,16 @@ class EventService:
                 outcome=AuditOutcome.DRY_RUN,
                 http_status=None,
                 request_ids=[],
-                detail=f"dry run: {action.value} ticket={event.ticket_number}",
+                detail=f"dry run: {action.value} ticket={event.ticket_number} "
+                f"user={sm_user or '-'}",
+            )
+            await self._notify_attempt(
+                action=action.value,
+                status=AuditOutcome.DRY_RUN.value,
+                contact=contact,
+                record=event,
+                sm_user=sm_user,
+                correlation_id=correlation_id,
             )
             return self._to_response(event, correlation_id)
         # endIf
@@ -538,7 +710,7 @@ class EventService:
             correlation_id=correlation_id,
             event_id=event.event_id,
             action=action.value,
-            detail=f"{action.value} ticket={event.ticket_number}",
+            detail=f"{action.value} ticket={event.ticket_number} user={sm_user or '-'}",
         )
         try:
             request_ids = await operations[action](ews_event_id)
@@ -556,6 +728,14 @@ class EventService:
                 detail=f"{type(exc).__name__}: {exc.message}",
             )
             await self._transition_or_warn(event.event_id, required, EventStatus.UNCERTAIN)
+            await self._notify_attempt(
+                action=action.value,
+                status=EventStatus.UNCERTAIN.value,
+                contact=contact,
+                record=event,
+                sm_user=sm_user,
+                correlation_id=correlation_id,
+            )
             raise
         except (UpstreamUnavailableError, RateLimitedError) as exc:
             # Clean pre-send failure: the call never executed, so the state stays untouched.
@@ -570,6 +750,14 @@ class EventService:
                 request_ids=[],
                 detail=f"{type(exc).__name__}: {exc.message}",
             )
+            await self._notify_attempt(
+                action=action.value,
+                status=AuditOutcome.UNAVAILABLE.value,
+                contact=contact,
+                record=event,
+                sm_user=sm_user,
+                correlation_id=correlation_id,
+            )
             raise
         except (UpstreamRejectedError, AuthConfigError) as exc:
             # Definite rejection without execution: audit the refusal; state stays untouched.
@@ -583,6 +771,14 @@ class EventService:
                 http_status=None,
                 request_ids=[],
                 detail=f"{type(exc).__name__}: {exc.message}",
+            )
+            await self._notify_attempt(
+                action=action.value,
+                status=AuditOutcome.REJECTED.value,
+                contact=contact,
+                record=event,
+                sm_user=sm_user,
+                correlation_id=correlation_id,
             )
             raise
         # endTryExcept
@@ -608,6 +804,14 @@ class EventService:
                 "Event changed state concurrently; the EWS outcome is recorded in audit.",
             )
         # endIf
+        await self._notify_attempt(
+            action=action.value,
+            status=updated.status.value,
+            contact=contact,
+            record=updated,
+            sm_user=sm_user,
+            correlation_id=correlation_id,
+        )
         return self._to_response(updated, correlation_id)
     # endDef
 
@@ -760,6 +964,7 @@ class EventService:
         *,
         client_id: str,
         correlation_id: str,
+        sm_user: str | None = None,
         ) -> MaintenanceEventResponse:
 
         """
@@ -774,6 +979,8 @@ class EventService:
         :type client_id: str
         :param correlation_id: Correlation id bound to this request.
         :type correlation_id: str
+        :param sm_user: The SSO username from ``Sm-User``; drives the notification recipient.
+        :type sm_user: str | None
         :return: Consumer view of the resolved event.
         :rtype: MaintenanceEventResponse
         :raises NotFoundError: If no event with ``event_id`` exists.
@@ -783,10 +990,11 @@ class EventService:
         """
 
         logger.info(
-            "resolve: event_id=%s -> %s by client_id=%s",
+            "resolve: event_id=%s -> %s by client_id=%s sm_user=%s",
             event_id,
             request.actual_status.value,
             client_id,
+            sm_user,
         )
         event = await self._events.get(event_id)
         if event is None:
@@ -838,6 +1046,19 @@ class EventService:
             http_status=None,
             request_ids=[],
             detail=request.attestation,
+        )
+        contact = (
+            await self._resolve_contact_block(sm_user)
+            if self._notifications is not None
+            else None
+        )
+        await self._notify_attempt(
+            action=RESOLVE_ACTION,
+            status=updated.status.value,
+            contact=contact,
+            record=updated,
+            sm_user=sm_user,
+            correlation_id=correlation_id,
         )
         return self._to_response(updated, correlation_id)
     # endDef
@@ -1057,16 +1278,20 @@ class EventService:
         self,
         request: ScheduleEventRequest,
         hold_mode: HoldMode,
+        contact: ContactBlock,
         ) -> EwsScheduleRequest:
 
         """
-        Enrich the northbound request into the southbound EWS schedule body: org constants and
-        the contact block come from config; datetimes pass through format_ews_datetime.
+        Enrich the northbound request into the southbound EWS schedule body: org constants come
+        from config, the contact block from the resolved (directory-or-default) values, and
+        datetimes pass through format_ews_datetime.
 
         :param request: Validated northbound schedule request.
         :type request: ScheduleEventRequest
         :param hold_mode: Effective hold mode (request value or configured default).
         :type hold_mode: HoldMode
+        :param contact: The effective contact block for this attempt.
+        :type contact: ContactBlock
         :return: The EWS wire model, ready for ``model_dump(mode="json", by_alias=True)``.
         :rtype: EwsScheduleRequest
         """
@@ -1075,16 +1300,155 @@ class EventService:
         return EwsScheduleRequest(
             org_id=settings.org_id,
             participant_name=settings.participant_name,
-            submitted_name=settings.submitted_name,
-            contact_name=settings.contact_name,
-            contact_phone=settings.contact_phone,
-            contact_email=settings.contact_email,
+            submitted_name=contact.submitted_name,
+            contact_name=contact.contact_name,
+            contact_phone=contact.contact_phone,
+            contact_email=contact.contact_email,
             scheduled_start_date=format_ews_datetime(request.start_time),
             scheduled_end_date=format_ews_datetime(request.end_time),
             ews_hold=hold_mode,
             suppress_duplicate_payments=request.suppress_duplicate_payments,
             ticket_number=request.ticket_number,
             network_notification_id=request.network_notification_id,
+        )
+    # endDef
+
+    def _require_minimum_lead(self, start_time: datetime) -> None:
+
+        """
+        Enforce the configured minimum lead time between "now" and the requested start
+        (``min_schedule_lead_days``; 0 disables the rule). EWS applies its own lead-time
+        tiers independently — this is the facade's policy gate.
+
+        :param start_time: The requested (tz-aware) window start.
+        :type start_time: datetime
+        :raises ValidationFailedError: If the start is closer than the configured minimum.
+        """
+
+        lead_days = self._settings.min_schedule_lead_days
+        if lead_days <= 0:
+            return
+        # endIf
+        earliest = datetime.now(timezone.utc) + timedelta(days=lead_days)
+        if start_time < earliest:
+            raise ValidationFailedError(
+                f"startTime must be at least {lead_days} day(s) in the future "
+                f"(earliest allowed: {earliest.isoformat()}).",
+            )
+        # endIf
+    # endDef
+
+    async def _resolve_contact_block(self, sm_user: str | None) -> ContactBlock:
+
+        """
+        Resolve the effective contact block for an attempt: directory-enriched per field when
+        an ``Sm-User`` is present and the directory answers, configured defaults otherwise.
+        Every fallback is described in ``source_note`` for the audit trail and the email.
+
+        :param sm_user: The SSO username, or None.
+        :type sm_user: str | None
+        :return: The effective contact block.
+        :rtype: ContactBlock
+        """
+
+        settings = self._settings
+        default = ContactBlock(
+            submitted_name=settings.submitted_name,
+            contact_name=settings.contact_name,
+            contact_phone=settings.contact_phone,
+            contact_email=settings.contact_email,
+            source_note=None,
+        )
+        username = sm_user.strip() if sm_user is not None else ""
+        if not username:
+            default.source_note = "no Sm-User header; configured default contacts used"
+            return default
+        # endIf
+        if self._employee_lookup is None:
+            default.source_note = (
+                f"directory lookup not configured; configured default contacts used "
+                f"(user={username})"
+            )
+            return default
+        # endIf
+        employee = await self._employee_lookup.get_employee(username)
+        if employee is None:
+            default.source_note = (
+                f"user {username} not found in GlobalDirectory (or directory unavailable); "
+                "configured default contacts used"
+            )
+            return default
+        # endIf
+        name = _sanitize_name(employee.name, CONTACT_NAME_MAX)
+        submitted = _sanitize_name(employee.name, SUBMITTED_NAME_MAX)
+        phone = _sanitize_phone(employee.phone)
+        email = _sanitize_email(employee.email_address)
+        missing = [
+            label
+            for label, value in (("name", name), ("phone", phone), ("email", email))
+            if value is None
+        ]
+        note = (
+            f"directory fields missing/unusable for user {username}: "
+            f"{', '.join(missing)}; configured defaults used for those"
+            if missing
+            else None
+        )
+        return ContactBlock(
+            submitted_name=submitted if submitted is not None else settings.submitted_name,
+            contact_name=name if name is not None else settings.contact_name,
+            contact_phone=phone if phone is not None else settings.contact_phone,
+            contact_email=email if email is not None else settings.contact_email,
+            source_note=note,
+        )
+    # endDef
+
+    async def _notify_attempt(
+        self,
+        *,
+        action: str,
+        status: str,
+        contact: ContactBlock | None,
+        record: EventRecord,
+        sm_user: str | None,
+        correlation_id: str,
+        ) -> None:
+
+        """
+        Send the per-attempt notification email when notifications are configured. Best-effort
+        end to end: NotificationService never raises.
+
+        :param action: The attempted action.
+        :type action: str
+        :param status: The outcome to report.
+        :type status: str
+        :param contact: The resolved contact block (recipient + fallback note); None when
+            notifications are disabled.
+        :type contact: ContactBlock | None
+        :param record: The event record the attempt concerned.
+        :type record: EventRecord
+        :param sm_user: The SSO username, or None.
+        :type sm_user: str | None
+        :param correlation_id: Correlation id bound to the attempt.
+        :type correlation_id: str
+        :return: None.
+        :rtype: None
+        """
+
+        if self._notifications is None or contact is None:
+            return
+        # endIf
+        await self._notifications.send_attempt(
+            action=action,
+            status=status,
+            recipient=contact.contact_email,
+            event_id=record.event_id,
+            ticket_number=record.ticket_number,
+            window_start=record.scheduled_start,
+            window_end=record.scheduled_end,
+            requested_by=sm_user,
+            note=contact.source_note,
+            correlation_id=correlation_id,
         )
     # endDef
 
