@@ -52,6 +52,7 @@ from src.apis.models.zelle.errors import (
     RateLimitedError,
     UpstreamUnavailableError,
 )
+from src.common.constants import HTTPCodes
 from src.common.logger import logger
 
 # Local variables
@@ -410,7 +411,7 @@ class TokenBroker:
             # endTryExcept
             status = response.status_code
             logger.debug("token exchange response status=%s", status)
-            if status == 200:
+            if status == HTTPCodes.SUCCESS:
                 try:
                     payload: dict[str, Any] = response.json()
                 except ValueError:
@@ -420,7 +421,7 @@ class TokenBroker:
                 self._breaker.record_success()
                 return payload
             # endIf
-            if status in (400, 401):
+            if status in (HTTPCodes.BAD_REQUEST, HTTPCodes.UNAUTHORIZED):
                 # Key/config incident: never retried and deliberately NOT fed to the breaker —
                 # AuthConfigError must keep alerting on its own channel, not mutate into 503s.
                 # The OAuth error code + the non-secret request context are logged southbound
@@ -442,7 +443,7 @@ class TokenBroker:
                     "check client registration, kid, and signing key.",
                 )
             # endIf
-            if status == 429:
+            if status == HTTPCodes.RATE_LIMITED_TOO_MANY_REQUESTS:
                 delay = parse_retry_after(response)
                 if not rate_limit_honored and delay < deadline - time.monotonic():
                     rate_limit_honored = True

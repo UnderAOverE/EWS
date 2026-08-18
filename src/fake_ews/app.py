@@ -47,6 +47,7 @@ from pydantic import ValidationError
 # Internal imports
 
 from src.apis.models.zelle.southbound import EwsScheduleRequest
+from src.common.constants import HTTPCodes
 
 # Local variables
 
@@ -127,11 +128,14 @@ def create_fake_ews_app() -> FastAPI:
             return None
         # endIf
         if fault == "500":
-            return JSONResponse(status_code=500, content={"error": "injected server error"})
+            return JSONResponse(
+                status_code=HTTPCodes.INTERNAL_SERVER_ERROR,
+                content={"error": "injected server error"},
+            )
         # endIf
         if fault == "429":
             return JSONResponse(
-                status_code=429,
+                status_code=HTTPCodes.RATE_LIMITED_TOO_MANY_REQUESTS,
                 content={"error": "injected throttle"},
                 headers={"Retry-After": "1"},
             )
@@ -139,7 +143,10 @@ def create_fake_ews_app() -> FastAPI:
         if fault == "401":
             if "401" not in state.consumed_faults:
                 state.consumed_faults.add("401")
-                return JSONResponse(status_code=401, content={"error": "injected unauthorized"})
+                return JSONResponse(
+                    status_code=HTTPCodes.UNAUTHORIZED,
+                    content={"error": "injected unauthorized"},
+                )
             # endIf
             return None
         # endIf
@@ -168,7 +175,10 @@ def create_fake_ews_app() -> FastAPI:
         """
 
         if not request.headers.get("Authorization", "").startswith("Bearer "):
-            return JSONResponse(status_code=401, content={"error": "missing bearer token"})
+            return JSONResponse(
+                status_code=HTTPCodes.UNAUTHORIZED,
+                content={"error": "missing bearer token"},
+            )
         # endIf
         missing = [name for name in REQUIRED_ZOMS_HEADERS if not request.headers.get(name)]
         if require_idempotency and not request.headers.get("idempotency-id"):
@@ -176,7 +186,7 @@ def create_fake_ews_app() -> FastAPI:
         # endIf
         if missing:
             return JSONResponse(
-                status_code=400,
+                status_code=HTTPCodes.BAD_REQUEST,
                 content={"error": f"missing headers: {', '.join(missing)}"},
             )
         # endIf
@@ -207,10 +217,10 @@ def create_fake_ews_app() -> FastAPI:
         assertion = form.get("client_assertion", [""])[0]
         if grant_type != "client_credentials" or \
                 assertion_type != CLIENT_ASSERTION_TYPE or not assertion:
-            return JSONResponse(status_code=400, content={"error": "invalid_request"})
+            return JSONResponse(status_code=HTTPCodes.BAD_REQUEST, content={"error": "invalid_request"})
         # endIf
         return JSONResponse(
-            status_code=200,
+            status_code=HTTPCodes.SUCCESS,
             content={
                 "access_token": f"fake-token-{uuid.uuid4()}",
                 "token_type": "Bearer",
@@ -245,13 +255,13 @@ def create_fake_ews_app() -> FastAPI:
             body = await request.json()
             EwsScheduleRequest.model_validate(body)
         except (ValueError, ValidationError) as exc:
-            return JSONResponse(status_code=400, content={"error": f"invalid body: {exc}"})
+            return JSONResponse(status_code=HTTPCodes.BAD_REQUEST, content={"error": f"invalid body: {exc}"})
         # endTryExcept
         idempotency_id = request.headers["idempotency-id"]
         stored = state.schedules_by_idempotency.get(idempotency_id)
         if stored is not None:
             # Replay: the SAME 201 body, no new event.
-            return JSONResponse(status_code=201, content=stored)
+            return JSONResponse(status_code=HTTPCodes.CREATED, content=stored)
         # endIf
         event_id = str(uuid.uuid4())
         org_id = str(body.get("orgId"))
@@ -265,7 +275,7 @@ def create_fake_ews_app() -> FastAPI:
         state.schedules_by_idempotency[idempotency_id] = response_body
         state.event_statuses[event_id] = STATUS_NOT_STARTED
         state.event_orgs[event_id] = org_id
-        return JSONResponse(status_code=201, content=response_body)
+        return JSONResponse(status_code=HTTPCodes.CREATED, content=response_body)
     # endDef
 
     async def _lifecycle(
@@ -301,28 +311,28 @@ def create_fake_ews_app() -> FastAPI:
         try:
             body = await request.json()
         except ValueError:
-            return JSONResponse(status_code=400, content={"error": "invalid JSON body"})
+            return JSONResponse(status_code=HTTPCodes.BAD_REQUEST, content={"error": "invalid JSON body"})
         # endTryExcept
         event_id = body.get("maintenanceEventId")
         if not isinstance(event_id, str) or len(event_id) != 36:
             return JSONResponse(
-                status_code=400,
+                status_code=HTTPCodes.BAD_REQUEST,
                 content={"error": "maintenanceEventId must be a 36-character string"},
             )
         # endIf
         current = state.event_statuses.get(event_id)
         if current is None:
-            return JSONResponse(status_code=404, content={"error": "unknown maintenanceEventId"})
+            return JSONResponse(status_code=HTTPCodes.NOT_FOUND, content={"error": "unknown maintenanceEventId"})
         # endIf
         if current != required_status:
             return JSONResponse(
-                status_code=422,
+                status_code=HTTPCodes.UNPROCESSABLE_ENTITY,
                 content={"error": f"cannot {operation} an event in status {current}"},
             )
         # endIf
         state.event_statuses[event_id] = target_status
         return JSONResponse(
-            status_code=200,
+            status_code=HTTPCodes.SUCCESS,
             content={
                 "maintenanceEvent": {
                     "maintenanceEventId": event_id,
@@ -402,7 +412,7 @@ def create_fake_ews_app() -> FastAPI:
         org_id = request.query_params.get("orgId")
         if not org_id:
             return JSONResponse(
-                status_code=400,
+                status_code=HTTPCodes.BAD_REQUEST,
                 content={"error": "orgId query parameter is required"},
             )
         # endIf
@@ -411,7 +421,7 @@ def create_fake_ews_app() -> FastAPI:
             for event_id, status in state.event_statuses.items()
             if state.event_orgs.get(event_id) == org_id
         ]
-        return JSONResponse(status_code=200, content={"maintenanceEvents": events})
+        return JSONResponse(status_code=HTTPCodes.SUCCESS, content={"maintenanceEvents": events})
     # endDef
 
     @app.get("/zoms/v1/count")
@@ -437,12 +447,12 @@ def create_fake_ews_app() -> FastAPI:
         # endIf
         if not request.query_params.get("orgId"):
             return JSONResponse(
-                status_code=400,
+                status_code=HTTPCodes.BAD_REQUEST,
                 content={"error": "orgId query parameter is required"},
             )
         # endIf
         return JSONResponse(
-            status_code=200,
+            status_code=HTTPCodes.SUCCESS,
             content={
                 "queueDepths": [
                     {"name": "rejected-payment", "count": 3},

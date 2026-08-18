@@ -56,7 +56,7 @@ from src.common.logger import logger
 
 # Local variables
 
-LIFECYCLE_SUCCESS_STATUS = HTTPCodes.HTTP_SUCCESS
+LIFECYCLE_SUCCESS_STATUS = HTTPCodes.SUCCESS
 events_router = APIRouter(
     prefix="/v1/maintenance-events",
     tags=["zelle-maintenance-events"],
@@ -276,7 +276,7 @@ async def _run_lifecycle(
 
 @events_router.post(
     "",
-    status_code=HTTPCodes.HTTP_CREATED,
+    status_code=HTTPCodes.CREATED,
     summary="Schedule a maintenance window",
     response_description="The consumer event view (camelCase), including the facade eventId.",
     description=_SCHEDULE_DESCRIPTION,
@@ -518,7 +518,7 @@ async def list_events(
     )
     envelope = await service.list_events(status, correlation_id=correlation_id)
     return JSONResponse(
-        status_code=HTTPCodes.HTTP_SUCCESS,
+        status_code=HTTPCodes.SUCCESS,
         content=envelope.model_dump(mode="json", by_alias=True),
         headers={"X-Correlation-Id": correlation_id},
     )
@@ -559,7 +559,7 @@ async def get_queue_depths(
         correlation_id=correlation_id,
     )
     return JSONResponse(
-        status_code=HTTPCodes.HTTP_SUCCESS,
+        status_code=HTTPCodes.SUCCESS,
         content=response.model_dump(mode="json", by_alias=True),
         headers={"X-Correlation-Id": correlation_id},
     )
@@ -597,7 +597,7 @@ async def get_event(
     logger.debug("get event event_id=%s client_id=%s", event_id, client_id)
     response = await service.get_event(event_id, correlation_id=correlation_id)
     return JSONResponse(
-        status_code=HTTPCodes.HTTP_SUCCESS,
+        status_code=HTTPCodes.SUCCESS,
         content=response.model_dump(mode="json", by_alias=True),
         headers={"X-Correlation-Id": correlation_id},
     )
@@ -639,7 +639,7 @@ async def get_upstream_status(
         correlation_id=correlation_id,
     )
     return JSONResponse(
-        status_code=HTTPCodes.HTTP_SUCCESS,
+        status_code=HTTPCodes.SUCCESS,
         content=response.model_dump(mode="json", by_alias=True),
         headers={"X-Correlation-Id": correlation_id},
     )

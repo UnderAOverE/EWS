@@ -542,11 +542,11 @@ class EventService:
         # endTryExcept
         if ews_response.maintenance_event_id is not None:
             new_status = EventStatus.SCHEDULED
-            status_code = HTTPCodes.HTTP_CREATED
+            status_code = HTTPCodes.CREATED
             outcome_detail = "maintenanceEventId returned"
         else:
             new_status = EventStatus.PENDING_UPSTREAM_ID
-            status_code = HTTPCodes.HTTP_ACCEPTED
+            status_code = HTTPCodes.ACCEPTED
             outcome_detail = "maintenanceEventId absent; awaiting operator resolve"
         # endIfElse
         await self._record_outcome(
@@ -556,7 +556,7 @@ class EventService:
             event_id=record.event_id,
             action=Constants.schedule,
             outcome=AuditOutcome.SUCCESS,
-            http_status=HTTPCodes.HTTP_CREATED,
+            http_status=HTTPCodes.CREATED,
             request_ids=request_ids,
             detail=outcome_detail,
         )
@@ -793,7 +793,7 @@ class EventService:
             event_id=event.event_id,
             action=action.value,
             outcome=AuditOutcome.SUCCESS,
-            http_status=HTTPCodes.HTTP_SUCCESS,
+            http_status=HTTPCodes.SUCCESS,
             request_ids=request_ids,
             detail=None,
         )

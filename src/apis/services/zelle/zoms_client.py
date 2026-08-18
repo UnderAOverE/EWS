@@ -548,10 +548,10 @@ class ZomsClient:
                 request_id,
                 elapsed,
             )
-            if 200 <= status < 300:
+            if HTTPCodes.SUCCESS <= status < HTTPCodes.MULTIPLE_CHOICES:
                 return response, request_ids
             # endIf
-            if status == 401:
+            if status == HTTPCodes.UNAUTHORIZED:
                 if not auth_retried:
                     # A 401 is rejected by the gateway BEFORE execution — the one reconciled
                     # exception to the lifecycle no-retry rule: refresh and retry exactly once.
@@ -564,7 +564,7 @@ class ZomsClient:
                     "check client registration and signing key.",
                 )
             # endIf
-            if status == HTTPCodes.HTTP_RATE_LIMITED_TOO_MANY_REQUESTS:
+            if status == HTTPCodes.RATE_LIMITED_TOO_MANY_REQUESTS:
                 delay = parse_retry_after(response)
                 if not rate_retried:
                     rate_retried = True
@@ -576,7 +576,7 @@ class ZomsClient:
                     retry_after_seconds=delay,
                 )
             # endIf
-            if HTTPCodes.HTTP_BAD_REQUEST <= status < HTTPCodes.HTTP_INTERNAL_SERVER_ERROR:
+            if HTTPCodes.BAD_REQUEST <= status < HTTPCodes.INTERNAL_SERVER_ERROR:
                 # The masked error body is logged here so the EWS-stated reason is
                 # diagnosable. A recognized policy detail surfaces as a consumer-fixable
                 # 422 or 409 with facade-authored text; anything else stays a facade-owned
@@ -681,10 +681,10 @@ class ZomsClient:
                 request_id,
                 elapsed,
             )
-            if 200 <= status < 300:
+            if HTTPCodes.SUCCESS <= status < HTTPCodes.MULTIPLE_CHOICES:
                 return response, request_ids
             # endIf
-            if status == 401:
+            if status == HTTPCodes.UNAUTHORIZED:
                 if not auth_retried:
                     self._broker.invalidate(token)
                     auth_retried = True
@@ -695,7 +695,7 @@ class ZomsClient:
                     "check client registration and signing key.",
                 )
             # endIf
-            if status == HTTPCodes.HTTP_RATE_LIMITED_TOO_MANY_REQUESTS:
+            if status == HTTPCodes.RATE_LIMITED_TOO_MANY_REQUESTS:
                 delay = parse_retry_after(response)
                 if not rate_retried:
                     rate_retried = True
@@ -707,7 +707,7 @@ class ZomsClient:
                     retry_after_seconds=delay,
                 )
             # endIf
-            if HTTPCodes.HTTP_BAD_REQUEST <= status < HTTPCodes.HTTP_INTERNAL_SERVER_ERROR:
+            if HTTPCodes.BAD_REQUEST <= status < HTTPCodes.INTERNAL_SERVER_ERROR:
                 # Upstream drift the facade surfaces as its own 502, never as a consumer 4xx.
                 # The masked error body is logged so the EWS-stated reason is diagnosable.
                 logger.warning(

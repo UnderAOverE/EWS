@@ -98,7 +98,7 @@ class ZelleFacadeError(Exception):
     """
 
     code: ErrorCode = ErrorCode.UPSTREAM_REJECTED
-    status_code: int = 502
+    status_code: int = HTTPCodes.BAD_GATEWAY
     retryable: bool = False
 
     def __init__(
@@ -131,7 +131,7 @@ class ConflictError(ZelleFacadeError):
     """
 
     code = ErrorCode.CONFLICT
-    status_code = 409
+    status_code = HTTPCodes.CONFLICT
     retryable = False
 # endClass
 
@@ -143,7 +143,7 @@ class ForbiddenActionError(ZelleFacadeError):
     """
 
     code = ErrorCode.FORBIDDEN_ACTION
-    status_code = 403
+    status_code = HTTPCodes.FORBIDDEN
     retryable = False
 # endClass
 
@@ -155,7 +155,7 @@ class NotFoundError(ZelleFacadeError):
     """
 
     code = ErrorCode.NOT_FOUND
-    status_code = 404
+    status_code = HTTPCodes.NOT_FOUND
     retryable = False
 # endClass
 
@@ -168,7 +168,7 @@ class UpstreamRejectedError(ZelleFacadeError):
     """
 
     code = ErrorCode.UPSTREAM_REJECTED
-    status_code = 502
+    status_code = HTTPCodes.BAD_GATEWAY
     retryable = False
 # endClass
 
@@ -183,7 +183,7 @@ class UpstreamPolicyValidationError(UpstreamRejectedError):
     """
 
     code = ErrorCode.VALIDATION_FAILED
-    status_code = HTTPCodes.HTTP_UNPROCESSABLE_ENTITY
+    status_code = HTTPCodes.UNPROCESSABLE_ENTITY
     retryable = False
 
 # endClass
@@ -198,7 +198,7 @@ class UpstreamPolicyConflictError(UpstreamRejectedError):
     """
 
     code = ErrorCode.CONFLICT
-    status_code = HTTPCodes.HTTP_CONFLICT
+    status_code = HTTPCodes.CONFLICT
     retryable = False
 
 # endClass
@@ -212,7 +212,7 @@ class UpstreamUnavailableError(ZelleFacadeError):
     """
 
     code = ErrorCode.UPSTREAM_UNAVAILABLE
-    status_code = 503
+    status_code = HTTPCodes.SERVICE_UNAVAILABLE
     retryable = True
 # endClass
 
@@ -224,7 +224,7 @@ class RateLimitedError(ZelleFacadeError):
     """
 
     code = ErrorCode.RATE_LIMITED
-    status_code = 503
+    status_code = HTTPCodes.SERVICE_UNAVAILABLE
     retryable = True
 # endClass
 
@@ -237,7 +237,7 @@ class UpstreamUncertainError(ZelleFacadeError):
     """
 
     code = ErrorCode.UPSTREAM_UNCERTAIN
-    status_code = 502
+    status_code = HTTPCodes.BAD_GATEWAY
     retryable = False
 # endClass
 
@@ -251,7 +251,7 @@ class AuthConfigError(ZelleFacadeError):
     """
 
     code = ErrorCode.UPSTREAM_REJECTED
-    status_code = 502
+    status_code = HTTPCodes.BAD_GATEWAY
     retryable = False
 # endClass
 
@@ -265,7 +265,7 @@ class ValidationFailedError(ZelleFacadeError):
     """
 
     code = ErrorCode.VALIDATION_FAILED
-    status_code = 400
+    status_code = HTTPCodes.BAD_REQUEST
     retryable = False
 # endClass
 
@@ -302,7 +302,7 @@ def zelle_exception_handler(request: Request, exc: ZelleFacadeError) -> JSONResp
     # 5xx (EWS/upstream problems) log at WARNING so they stand out; consumer 4xx stay at INFO.
     log = (
         logger.warning
-        if exc.status_code >= HTTPCodes.HTTP_INTERNAL_SERVER_ERROR
+        if exc.status_code >= HTTPCodes.INTERNAL_SERVER_ERROR
         else logger.info
     )
     log(
@@ -358,7 +358,7 @@ def validation_exception_handler(
         ),
     )
     return JSONResponse(
-        status_code=HTTPCodes.HTTP_UNPROCESSABLE_ENTITY,
+        status_code=HTTPCodes.UNPROCESSABLE_ENTITY,
         content=envelope.model_dump(mode="json", by_alias=True),
         headers={"X-Correlation-Id": correlation_id},
     )

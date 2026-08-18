@@ -44,6 +44,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 # Internal imports
 
+from src.common.constants import HTTPCodes
 from src.common.logger import logger
 
 # Local variables
@@ -190,7 +191,7 @@ class EmployeeDirectoryClient:
             )
             return None
         # endTryExcept
-        if response.status_code != 200:
+        if response.status_code != HTTPCodes.SUCCESS:
             logger.warning(
                 "employee directory returned HTTP %s for user=%s",
                 response.status_code,

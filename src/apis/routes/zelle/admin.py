@@ -138,7 +138,7 @@ async def resolve_event(
         sm_user=sm_user,
     )
     return JSONResponse(
-        status_code=HTTPCodes.HTTP_SUCCESS,
+        status_code=HTTPCodes.SUCCESS,
         content=response.model_dump(mode="json", by_alias=True),
         headers={"X-Correlation-Id": correlation_id},
     )
