@@ -32,7 +32,7 @@ sys.dont_write_bytecode = True
 
 # External imports
 
-from enum import IntEnum, StrEnum
+from enum import IntEnum, StrEnum, auto
 
 # Internal imports
 
@@ -42,6 +42,25 @@ from enum import IntEnum, StrEnum
 # ----------------------------------------------------------------------------------------------------#
 # Classes or functions.                                                                               #
 # ----------------------------------------------------------------------------------------------------#
+
+
+class Constants(StrEnum):
+
+    """
+    General state, action, and status words. Partial mirror of the host's ``Constants``
+    StrEnum (the host holds the full set); members use ``auto()`` so each value is the
+    lowercase member name, exactly like the host.
+    """
+
+    cancel = auto()
+    complete = auto()
+    pending = auto()
+    resolve = auto()
+    schedule = auto()
+    start = auto()
+    succeeded = auto()
+
+# endClass
 
 
 class DatabasesCollections(StrEnum):

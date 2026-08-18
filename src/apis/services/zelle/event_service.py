@@ -81,13 +81,14 @@ from src.apis.repositories.zelle.events import EventsRepository
 from src.apis.repositories.zelle.idempotency import IdempotencyRepository
 from src.apis.services.zelle.notifications import NotificationService
 from src.apis.services.zelle.zoms_client import ZomsClient
+from src.common.constants import Constants, HTTPCodes
 from src.common.employee_directory import EmployeeLookup
 from src.common.logger import logger
 
 # Local variables
 
-SCHEDULE_ACTION = "schedule"
-RESOLVE_ACTION = "resolve"
+# Action words and HTTP status codes come from the shared Constants/HTTPCodes enums (host
+# convention); no local string or integer literals for them.
 # EWS wire limits for the contact block (docs/zoms-api-reference.md §3.1): directory values
 # outside these bounds fall back per-field to the configured defaults.
 SUBMITTED_NAME_MAX = 50
@@ -96,11 +97,6 @@ CONTACT_EMAIL_MAX = 255
 CONTACT_PHONE_MIN_DIGITS = 9
 CONTACT_PHONE_MAX_DIGITS = 12
 NON_DIGIT_PATTERN = re.compile(r"\D")
-# EWS success codes per docs/zoms-api-reference.md: schedule 201, lifecycle verbs 200.
-EWS_SCHEDULE_SUCCESS_STATUS = 201
-EWS_LIFECYCLE_SUCCESS_STATUS = 200
-# Northbound status when EWS omits maintenanceEventId synchronously (open question #2).
-PENDING_UPSTREAM_STATUS_CODE = 202
 IN_FLIGHT_MESSAGE = "A schedule with this Idempotency-Key is already in flight."
 # The ONLY legal state-machine edges (architecture §5). The service checks legality here and
 # events.transition() enforces each edge atomically via its expected-status filter.
@@ -464,7 +460,7 @@ class EventService:
             client_id=client_id,
             correlation_id=correlation_id,
             event_id=record.event_id,
-            action=SCHEDULE_ACTION,
+            action=Constants.schedule,
             detail=(
                 f"schedule ticket={record.ticket_number} "
                 f"window={record.scheduled_start.isoformat()}"
@@ -483,7 +479,7 @@ class EventService:
                 client_id=client_id,
                 correlation_id=correlation_id,
                 event_id=record.event_id,
-                action=SCHEDULE_ACTION,
+                action=Constants.schedule,
                 outcome=AuditOutcome.UNCERTAIN,
                 http_status=None,
                 request_ids=[],
@@ -495,7 +491,7 @@ class EventService:
                 EventStatus.UNCERTAIN,
             )
             await self._notify_attempt(
-                action=SCHEDULE_ACTION,
+                action=Constants.schedule,
                 status=EventStatus.UNCERTAIN.value,
                 contact=contact,
                 record=record,
@@ -515,7 +511,7 @@ class EventService:
                 detail=f"{type(exc).__name__}: {exc.message}",
             )
             await self._notify_attempt(
-                action=SCHEDULE_ACTION,
+                action=Constants.schedule,
                 status=AuditOutcome.UNAVAILABLE.value,
                 contact=contact,
                 record=record,
@@ -535,7 +531,7 @@ class EventService:
                 detail=f"{type(exc).__name__}: {exc.message}",
             )
             await self._notify_attempt(
-                action=SCHEDULE_ACTION,
+                action=Constants.schedule,
                 status=AuditOutcome.REJECTED.value,
                 contact=contact,
                 record=record,
@@ -546,11 +542,11 @@ class EventService:
         # endTryExcept
         if ews_response.maintenance_event_id is not None:
             new_status = EventStatus.SCHEDULED
-            status_code = EWS_SCHEDULE_SUCCESS_STATUS
+            status_code = HTTPCodes.HTTP_CREATED
             outcome_detail = "maintenanceEventId returned"
         else:
             new_status = EventStatus.PENDING_UPSTREAM_ID
-            status_code = PENDING_UPSTREAM_STATUS_CODE
+            status_code = HTTPCodes.HTTP_ACCEPTED
             outcome_detail = "maintenanceEventId absent; awaiting operator resolve"
         # endIfElse
         await self._record_outcome(
@@ -558,9 +554,9 @@ class EventService:
             client_id=client_id,
             correlation_id=correlation_id,
             event_id=record.event_id,
-            action=SCHEDULE_ACTION,
+            action=Constants.schedule,
             outcome=AuditOutcome.SUCCESS,
-            http_status=EWS_SCHEDULE_SUCCESS_STATUS,
+            http_status=HTTPCodes.HTTP_CREATED,
             request_ids=request_ids,
             detail=outcome_detail,
         )
@@ -586,7 +582,7 @@ class EventService:
             )
         # endIf
         await self._notify_attempt(
-            action=SCHEDULE_ACTION,
+            action=Constants.schedule,
             status=new_status.value,
             contact=contact,
             record=updated,
@@ -797,7 +793,7 @@ class EventService:
             event_id=event.event_id,
             action=action.value,
             outcome=AuditOutcome.SUCCESS,
-            http_status=EWS_LIFECYCLE_SUCCESS_STATUS,
+            http_status=HTTPCodes.HTTP_SUCCESS,
             request_ids=request_ids,
             detail=None,
         )
@@ -1031,7 +1027,7 @@ class EventService:
             client_id=client_id,
             correlation_id=correlation_id,
             event_id=event.event_id,
-            action=RESOLVE_ACTION,
+            action=Constants.resolve,
             detail=request.attestation,
         )
         updated = await self._events.transition(
@@ -1049,7 +1045,7 @@ class EventService:
             client_id=client_id,
             correlation_id=correlation_id,
             event_id=event.event_id,
-            action=RESOLVE_ACTION,
+            action=Constants.resolve,
             outcome=AuditOutcome.SUCCESS,
             http_status=None,
             request_ids=[],
@@ -1061,7 +1057,7 @@ class EventService:
             else None
         )
         await self._notify_attempt(
-            action=RESOLVE_ACTION,
+            action=Constants.resolve,
             status=updated.status.value,
             contact=contact,
             record=updated,
@@ -1158,10 +1154,10 @@ class EventService:
                 "Idempotency-Key was already used with a different request body.",
             )
         # endIf
-        if existing.status == "pending":
+        if existing.status == Constants.pending:
             raise ConflictError(IN_FLIGHT_MESSAGE)
         # endIf
-        if existing.status == "succeeded":
+        if existing.status == Constants.succeeded:
             if existing.response_snapshot is None or existing.response_status_code is None:
                 raise ConflictError(
                     "Stored idempotent response is incomplete; contact the operator.",
@@ -1173,7 +1169,7 @@ class EventService:
                 client_id=client_id,
                 correlation_id=correlation_id,
                 event_id=existing.event_id,
-                action=SCHEDULE_ACTION,
+                action=Constants.schedule,
                 detail="idempotent replay",
             )
             await self._record_outcome(
@@ -1181,7 +1177,7 @@ class EventService:
                 client_id=client_id,
                 correlation_id=correlation_id,
                 event_id=existing.event_id,
-                action=SCHEDULE_ACTION,
+                action=Constants.schedule,
                 outcome=AuditOutcome.REPLAYED,
                 http_status=existing.response_status_code,
                 request_ids=[],
@@ -1237,7 +1233,7 @@ class EventService:
             client_id=client_id,
             correlation_id=correlation_id,
             event_id=event_id,
-            action=SCHEDULE_ACTION,
+            action=Constants.schedule,
             outcome=outcome,
             http_status=None,
             request_ids=[],

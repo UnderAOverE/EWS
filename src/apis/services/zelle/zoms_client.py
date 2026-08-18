@@ -65,16 +65,14 @@ from src.apis.models.zelle.southbound import (
     EwsScheduleResponse,
 )
 from src.apis.services.zelle.token_broker import TokenBroker, parse_retry_after
+from src.common.constants import Constants, HTTPCodes
 from src.common.logger import logger
 
 # Local variables
 
 # Transient causes (connect failure / 5xx on schedule) get at most this many HTTP attempts.
+# Operation path segments come from the shared Constants StrEnum (host convention).
 MAX_TRANSIENT_ATTEMPTS = 2
-SCHEDULE_OPERATION = "schedule"
-START_OPERATION = "start"
-COMPLETE_OPERATION = "complete"
-CANCEL_OPERATION = "cancel"
 # Failure classes whose request never left the facade — safe to report retryable for any verb.
 PRE_SEND_ERRORS = (httpx.ConnectError, httpx.ConnectTimeout)
 # Failure classes after the request may have been sent — the outcome is unknowable here.
@@ -276,7 +274,7 @@ class ZomsClient:
         # Optional fields are omitted, not sent as nulls — the vendor spec marks them optional.
         body = payload.model_dump(mode="json", by_alias=True, exclude_none=True)
         response, request_ids = await self._post(
-            SCHEDULE_OPERATION,
+            Constants.schedule,
             body,
             idempotency_id=idempotency_id,
             allow_transient_retry=True,
@@ -300,7 +298,7 @@ class ZomsClient:
         :raises AuthConfigError: When two consecutive tokens are rejected.
         """
 
-        return await self._lifecycle(START_OPERATION, ews_event_id)
+        return await self._lifecycle(Constants.start, ews_event_id)
     # endDef
 
     async def complete(self, ews_event_id: str) -> list[str]:
@@ -319,7 +317,7 @@ class ZomsClient:
         :raises AuthConfigError: When two consecutive tokens are rejected.
         """
 
-        return await self._lifecycle(COMPLETE_OPERATION, ews_event_id)
+        return await self._lifecycle(Constants.complete, ews_event_id)
     # endDef
 
     async def cancel(self, ews_event_id: str) -> list[str]:
@@ -338,7 +336,7 @@ class ZomsClient:
         :raises AuthConfigError: When two consecutive tokens are rejected.
         """
 
-        return await self._lifecycle(CANCEL_OPERATION, ews_event_id)
+        return await self._lifecycle(Constants.cancel, ews_event_id)
     # endDef
 
     async def get_status(
@@ -566,7 +564,7 @@ class ZomsClient:
                     "check client registration and signing key.",
                 )
             # endIf
-            if status == 429:
+            if status == HTTPCodes.HTTP_RATE_LIMITED_TOO_MANY_REQUESTS:
                 delay = parse_retry_after(response)
                 if not rate_retried:
                     rate_retried = True
@@ -578,7 +576,7 @@ class ZomsClient:
                     retry_after_seconds=delay,
                 )
             # endIf
-            if 400 <= status < 500:
+            if HTTPCodes.HTTP_BAD_REQUEST <= status < HTTPCodes.HTTP_INTERNAL_SERVER_ERROR:
                 # The masked error body is logged here so the EWS-stated reason is
                 # diagnosable. A recognized policy detail surfaces as a consumer-fixable
                 # 422 or 409 with facade-authored text; anything else stays a facade-owned
@@ -697,7 +695,7 @@ class ZomsClient:
                     "check client registration and signing key.",
                 )
             # endIf
-            if status == 429:
+            if status == HTTPCodes.HTTP_RATE_LIMITED_TOO_MANY_REQUESTS:
                 delay = parse_retry_after(response)
                 if not rate_retried:
                     rate_retried = True
@@ -709,7 +707,7 @@ class ZomsClient:
                     retry_after_seconds=delay,
                 )
             # endIf
-            if 400 <= status < 500:
+            if HTTPCodes.HTTP_BAD_REQUEST <= status < HTTPCodes.HTTP_INTERNAL_SERVER_ERROR:
                 # Upstream drift the facade surfaces as its own 502, never as a consumer 4xx.
                 # The masked error body is logged so the EWS-stated reason is diagnosable.
                 logger.warning(
