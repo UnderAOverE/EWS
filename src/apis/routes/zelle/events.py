@@ -81,8 +81,12 @@ from config**, and calls EWS exactly once.
 
 **Body** — you send only what a change ticket knows: `startTime`, `endTime`, `ticketNumber`,
 `reason`, and optionally `holdMode` / `allowOverlap` / `suppressDuplicatePayments` /
-`networkNotificationId`. You do **not** send your org id, participant/submitted names, or the
-contact block — the facade injects those.
+`networkNotificationId` / `emergencyImmediateStart`. You do **not** send your org id,
+participant/submitted names, or the contact block — the facade injects those.
+
+**Allowed hours** — EWS only permits maintenance windows between 11:00 PM and 5:00 AM CST
+(12:00 AM to 6:00 AM CDT). Off-window requests are rejected with `422` before any EWS call.
+`emergencyImmediateStart: true` (an incident starting within ~15 minutes) is exempt.
 
 **Responses**
 - `201` — scheduled; the body carries the facade `eventId` you use for every later call.

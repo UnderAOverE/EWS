@@ -51,6 +51,8 @@ from src.apis.config.zelle import ZelleSettings
 from src.apis.models.zelle.errors import (
     AuthConfigError,
     RateLimitedError,
+    UpstreamPolicyConflictError,
+    UpstreamPolicyValidationError,
     UpstreamRejectedError,
     UpstreamUnavailableError,
     UpstreamUncertainError,
@@ -88,6 +90,47 @@ POST_SEND_ERRORS = (
 LOG_BODY_MAX_CHARS = 500
 EMAIL_PATTERN = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+")
 LONG_DIGIT_PATTERN = re.compile(r"\d{7,}")
+# Known EWS policy-rejection markers (vendor rules doc, transcribed 2026-08-18), matched
+# case-insensitively against the RFC 7807 "detail" field of a 4xx body. A recognized rule is
+# one the CONSUMER can fix, so it surfaces northbound as a 422 or 409 with facade-authored
+# text; anything unrecognized stays the generic 502 rejection. The raw detail never leaves
+# this module.
+POLICY_REJECTION_RULES: tuple[tuple[str, type[UpstreamRejectedError], str], ...] = (
+    (
+        "allowed time",
+        UpstreamPolicyValidationError,
+        "EWS rejected the window: standard maintenance must fall within 11:00 PM to "
+        "5:00 AM CST / 12:00 AM to 6:00 AM CDT (05:00 to 11:00 UTC). Adjust "
+        "startTime/endTime, or use emergencyImmediateStart for an incident window.",
+    ),
+    (
+        "scheduling conflict",
+        UpstreamPolicyConflictError,
+        "EWS reports an overlapping maintenance event for this organization.",
+    ),
+    (
+        "exceeds the limit",
+        UpstreamPolicyValidationError,
+        "EWS's cap of sixty (60) scheduled but unstarted events is reached for this "
+        "organization.",
+    ),
+    (
+        "start date must be less than end date",
+        UpstreamPolicyValidationError,
+        "EWS rejected the window: startTime must be before endTime.",
+    ),
+    (
+        "started within six (6) hours",
+        UpstreamPolicyValidationError,
+        "EWS only allows starting an event within six (6) hours of its scheduled start "
+        "time.",
+    ),
+    (
+        "ewshold cannot be ews_hold",
+        UpstreamPolicyValidationError,
+        "EWS does not allow ewsHold=EWS_HOLD for this organization.",
+    ),
+)
 
 
 # ----------------------------------------------------------------------------------------------------#
@@ -114,6 +157,56 @@ def _mask_body_for_log(text: str) -> str:
         return masked[:LOG_BODY_MAX_CHARS] + "...[truncated]"
     # endIf
     return masked
+# endDef
+
+
+def _classify_rejection(
+    response: httpx.Response,
+    http_status: int,
+    operation: str,
+    ) -> UpstreamRejectedError:
+
+    """
+    Map a definite EWS 4xx to the consumer-facing error. A recognized RFC 7807 ``detail``
+    (a rule the consumer can fix) becomes a policy error with facade-authored text; anything
+    else stays the generic 502 rejection.
+
+    :param response: The 4xx EWS response.
+    :type response: httpx.Response
+    :param http_status: The EWS HTTP status code.
+    :type http_status: int
+    :param operation: The operation name for the generic message.
+    :type operation: str
+    :return: The error to raise (never raised here).
+    :rtype: UpstreamRejectedError
+    """
+
+    detail: str | None = None
+    try:
+        body = response.json()
+        if isinstance(body, dict) and isinstance(body.get("detail"), str):
+            detail = body["detail"]
+
+        # endIf
+
+    except ValueError:
+        detail = None
+
+    # endTryExcept
+
+    if detail is not None:
+        lowered = detail.lower()
+        for marker, error_type, message in POLICY_REJECTION_RULES:
+            if marker in lowered:
+                return error_type(message)
+
+            # endIf
+
+        # endFor
+
+    # endIf
+
+    return UpstreamRejectedError(f"EWS rejected the {operation} request (HTTP {http_status}).")
 # endDef
 
 
@@ -486,9 +579,10 @@ class ZomsClient:
                 )
             # endIf
             if 400 <= status < 500:
-                # The rejected fields were facade-enriched — this surfaces as a facade-owned
-                # 502 northbound, never a consumer 4xx. The masked error body is logged here
-                # (and only here) so the EWS-stated reason is diagnosable.
+                # The masked error body is logged here so the EWS-stated reason is
+                # diagnosable. A recognized policy detail surfaces as a consumer-fixable
+                # 422 or 409 with facade-authored text; anything else stays a facade-owned
+                # 502, and the raw EWS body never reaches a consumer either way.
                 logger.warning(
                     "POST %s rejected (HTTP %s) request_id=%s body=%s",
                     url,
@@ -496,9 +590,8 @@ class ZomsClient:
                     request_id,
                     _mask_body_for_log(response.text),
                 )
-                raise UpstreamRejectedError(
-                    f"EWS rejected the {operation} request (HTTP {status}).",
-                )
+                raise _classify_rejection(response, status, operation)
+
             # endIf
             # 5xx.
             if allow_transient_retry:

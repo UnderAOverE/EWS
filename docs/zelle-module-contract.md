@@ -171,6 +171,8 @@ class ScheduleEventRequest(BaseModel):
     allow_overlap: bool = False
     suppress_duplicate_payments: bool | None = None
     network_notification_id: str | None = None      # 1..36
+    emergency_immediate_start: bool | None = None   # EMERGENCY_IMMEDIATE indicator;
+    #   exempts the request from the facade window/lead gates, passed through southbound
     # model_validator: end_time > start_time; start_time not in the past
     # (allow 5-minute grace for clock skew)
 
@@ -417,9 +419,11 @@ class EventService:
     async def schedule(self, request: ScheduleEventRequest, *, client_id: str,
                        idempotency_key: str | None, correlation_id: str,
                        sm_user: str | None = None) -> ScheduleResult
-    # ^ enforces min_schedule_lead_days; enriches the contact block from the directory for
-    #   sm_user (per-field fallback to config defaults, noted in audit + email); every attempt
-    #   (incl. failures and dry runs) sends a best-effort notification email
+    # ^ enforces min_schedule_lead_days and the EWS allowed-window gate (enforce_ews_window;
+    #   05:00 to 11:00 UTC; skipped when emergency_immediate_start is true); enriches the
+    #   contact block from the directory for sm_user (per-field fallback to config defaults,
+    #   noted in audit + email); every attempt (incl. failures and dry runs) sends a
+    #   best-effort notification email
     async def lifecycle(self, event_id: str, action: LifecycleAction, *, client_id: str,
                         confirm_ticket: str, correlation_id: str,
                         dry_run: bool = False,
@@ -624,4 +628,7 @@ asyncio_mode = auto
 422 VALIDATION_FAILED (also override FastAPI's RequestValidationError into the
 envelope) · 409 CONFLICT · 403 FORBIDDEN_ACTION · 404 NOT_FOUND ·
 502 UPSTREAM_REJECTED / UPSTREAM_UNCERTAIN · 503 UPSTREAM_UNAVAILABLE /
-RATE_LIMITED (+ Retry-After when known).
+RATE_LIMITED (+ Retry-After when known). Recognized EWS policy rejections (RFC 7807
+detail matched in the client) surface as UpstreamPolicyValidationError (422,
+VALIDATION_FAILED) or UpstreamPolicyConflictError (409, CONFLICT) — both subclasses of
+UpstreamRejectedError so the audit/FAILED paths are unchanged; unrecognized 4xx stays 502.

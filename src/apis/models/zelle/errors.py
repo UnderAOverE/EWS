@@ -173,6 +173,37 @@ class UpstreamRejectedError(ZelleFacadeError):
 # endClass
 
 
+class UpstreamPolicyValidationError(UpstreamRejectedError):
+
+    """
+    422 ``VALIDATION_FAILED``: EWS rejected for a scheduling rule the CONSUMER can fix
+    (allowed window, start gates, volume cap, date order, ewsHold entitlement). The message
+    is facade-authored from the recognized rule, never the raw EWS body. Subclassing
+    UpstreamRejectedError keeps the audit and FAILED bookkeeping paths identical.
+    """
+
+    code = ErrorCode.VALIDATION_FAILED
+    status_code = HTTPCodes.HTTP_UNPROCESSABLE_ENTITY
+    retryable = False
+
+# endClass
+
+
+class UpstreamPolicyConflictError(UpstreamRejectedError):
+
+    """
+    409 ``CONFLICT``: EWS reports a scheduling conflict (an overlapping maintenance event
+    for the organization). Facade-authored message; same audit and FAILED paths as the
+    parent.
+    """
+
+    code = ErrorCode.CONFLICT
+    status_code = HTTPCodes.HTTP_CONFLICT
+    retryable = False
+
+# endClass
+
+
 class UpstreamUnavailableError(ZelleFacadeError):
 
     """

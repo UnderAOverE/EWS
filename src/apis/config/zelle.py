@@ -207,6 +207,15 @@ class ZelleSettings(BaseSettings):
     # schedule time; EWS applies its own lead-time tiers independently). 0 disables the rule —
     # set ZELLE_MIN_SCHEDULE_LEAD_DAYS per environment.
     min_schedule_lead_days: int = 0
+    # EWS allowed maintenance window fail-fast gate (vendor rules doc, 2026-08-18): standard
+    # and EMERGENCY_SCHEDULED events must fall within 11:00 PM to 5:00 AM CST / 12:00 AM to
+    # 6:00 AM CDT. Both definitions are the same fixed 05:00 to 11:00 UTC band, so the check
+    # is DST-free in UTC. Checked northbound at schedule time so an off-window request gets an
+    # actionable 422 without a southbound round trip; EMERGENCY_IMMEDIATE requests are exempt.
+    # Retune or disable via env if EWS changes policy.
+    enforce_ews_window: bool = True
+    ews_window_start_utc_hour: int = 5
+    ews_window_end_utc_hour: int = 11
     # Master switch for the per-attempt rich-HTML notification emails.
     notification_emails_enabled: bool = True
     # Timeouts / broker.

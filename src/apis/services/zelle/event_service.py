@@ -363,7 +363,15 @@ class EventService:
         """
 
         self._require_schedule_allowed(client_id)
-        self._require_minimum_lead(request.start_time)
+        if not request.emergency_immediate_start:
+            # EMERGENCY_IMMEDIATE events are exempt from both facade scheduling gates: the
+            # vendor exempts them from the allowed window, and their lead time is minutes by
+            # definition.
+            self._require_minimum_lead(request.start_time)
+            self._require_within_ews_window(request.start_time, request.end_time)
+
+        # endIf
+
         logger.info(
             "schedule: client_id=%s sm_user=%s ticket=%s idempotency_key=%s",
             client_id,
@@ -1310,7 +1318,58 @@ class EventService:
             suppress_duplicate_payments=request.suppress_duplicate_payments,
             ticket_number=request.ticket_number,
             network_notification_id=request.network_notification_id,
+            emergency_immediate_start=request.emergency_immediate_start,
         )
+    # endDef
+
+    def _require_within_ews_window(
+        self,
+        start_time: datetime,
+        end_time: datetime,
+        ) -> None:
+
+        """
+        Fail fast when the requested window falls outside EWS's allowed maintenance hours
+        (vendor: 11:00 PM to 5:00 AM CST / 12:00 AM to 6:00 AM CDT, which are both the same
+        fixed 05:00 to 11:00 UTC band, so the check is DST-free in UTC). Callers skip this
+        gate for EMERGENCY_IMMEDIATE requests, which the vendor exempts.
+
+        :param start_time: The requested (tz-aware) window start.
+        :type start_time: datetime
+        :param end_time: The requested (tz-aware) window end.
+        :type end_time: datetime
+        :raises ValidationFailedError: If any part of the window is outside the allowed band.
+        """
+
+        if not self._settings.enforce_ews_window:
+            return
+
+        # endIf
+
+        start_utc = start_time.astimezone(timezone.utc)
+        end_utc = end_time.astimezone(timezone.utc)
+        band_open = start_utc.replace(
+            hour=self._settings.ews_window_start_utc_hour,
+            minute=0,
+            second=0,
+            microsecond=0,
+        )
+        band_close = start_utc.replace(
+            hour=self._settings.ews_window_end_utc_hour,
+            minute=0,
+            second=0,
+            microsecond=0,
+        )
+        if start_utc < band_open or end_utc > band_close:
+            raise ValidationFailedError(
+                "The requested window is outside EWS's allowed maintenance hours: 11:00 PM "
+                "to 5:00 AM CST / 12:00 AM to 6:00 AM CDT (05:00 to 11:00 UTC; requested "
+                f"{start_utc.isoformat()} to {end_utc.isoformat()} UTC). Adjust the window, "
+                "or set emergencyImmediateStart=true for an immediate incident window.",
+            )
+
+        # endIf
+
     # endDef
 
     def _require_minimum_lead(self, start_time: datetime) -> None:

@@ -105,6 +105,10 @@ class EwsScheduleRequest(BaseModel):
     suppress_duplicate_payments: bool | None = None
     ticket_number: Annotated[str, Field(min_length=1, max_length=36)] | None = None
     network_notification_id: Annotated[str, Field(min_length=1, max_length=36)] | None = None
+    # EMERGENCY_IMMEDIATE indicator (vendor rules doc, transcribed 2026-08-18): True marks an
+    # incident window starting within about fifteen minutes, exempt from the allowed-window
+    # rule. Omitted from the wire when None (the client dumps with exclude_none).
+    emergency_immediate_start: bool | None = None
 # endClass
 
 

@@ -50,6 +50,8 @@ from src.apis.models.zelle.enums import HoldMode
 from src.apis.models.zelle.errors import (
     AuthConfigError,
     RateLimitedError,
+    UpstreamPolicyConflictError,
+    UpstreamPolicyValidationError,
     UpstreamRejectedError,
     UpstreamUnavailableError,
     UpstreamUncertainError,
@@ -606,6 +608,92 @@ async def test_4xx_error_body_is_logged_masked(
     assert "scheduling conflict" in caplog.text
     assert "TTechnology@BBO.com" not in caplog.text
     assert "9999999977" not in caplog.text
+# endDef
+
+
+@respx.mock
+async def test_off_window_rejection_maps_to_422(
+    zoms: ZomsClient,
+    payload: EwsScheduleRequest,
+    ) -> None:
+
+    """
+    The live-observed off-window RFC 7807 detail maps to a 422 policy error whose message
+    names the allowed hours, never the raw EWS text.
+    """
+
+    respx.post(SCHEDULE_URL).mock(
+        return_value=httpx.Response(
+            422,
+            json={
+                "detail": "Scheduling maintenance event outside the allowed times.",
+                "instance": "/zoms/v1/events/schedule",
+                "status": 422,
+                "title": "Unprocessable Entity",
+                "type": "about:blank",
+            },
+        ),
+    )
+    with pytest.raises(UpstreamPolicyValidationError) as excinfo:
+        await zoms.schedule(payload, str(uuid.uuid4()))
+
+    # endWith
+
+    assert excinfo.value.status_code == 422
+    assert "CST" in excinfo.value.message
+    assert "Unprocessable Entity" not in excinfo.value.message
+# endDef
+
+
+@respx.mock
+async def test_conflict_rejection_maps_to_409(
+    zoms: ZomsClient,
+    payload: EwsScheduleRequest,
+    ) -> None:
+
+    """
+    The documented overlap detail maps to a 409 policy conflict error.
+    """
+
+    respx.post(SCHEDULE_URL).mock(
+        return_value=httpx.Response(
+            400,
+            json={
+                "detail": (
+                    "Maintenance event could not be created due to a scheduling conflict."
+                ),
+            },
+        ),
+    )
+    with pytest.raises(UpstreamPolicyConflictError) as excinfo:
+        await zoms.schedule(payload, str(uuid.uuid4()))
+
+    # endWith
+
+    assert excinfo.value.status_code == 409
+# endDef
+
+
+@respx.mock
+async def test_unrecognized_4xx_stays_generic_502(
+    zoms: ZomsClient,
+    payload: EwsScheduleRequest,
+    ) -> None:
+
+    """
+    A 4xx whose detail matches no known policy rule stays the generic 502 rejection.
+    """
+
+    respx.post(SCHEDULE_URL).mock(
+        return_value=httpx.Response(400, json={"detail": "some brand new refusal"}),
+    )
+    with pytest.raises(UpstreamRejectedError) as excinfo:
+        await zoms.schedule(payload, str(uuid.uuid4()))
+
+    # endWith
+
+    assert type(excinfo.value) is UpstreamRejectedError
+    assert excinfo.value.status_code == 502
 # endDef
 
 

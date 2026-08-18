@@ -73,17 +73,37 @@ class ScheduleEventRequest(BaseModel):
     knows; config owns the org constants and contact block enriched southbound.
     """
 
-    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+    model_config = ConfigDict(
+        alias_generator=to_camel,
+        populate_by_name=True,
+        # Swagger/ReDoc example body. Timestamps deliberately use the numeric offset form
+        # (the AMP convention) with times inside EWS's allowed maintenance window, so a
+        # copy-pasted example passes both the facade and EWS. 'Z' is also accepted but means
+        # UTC, which silently shifts local wall-clock digits hours earlier.
+        json_schema_extra={
+            "example": {
+                "startTime": "2026-12-01T00:30:00-05:00",
+                "endTime": "2026-12-01T02:30:00-05:00",
+                "ticketNumber": "INC1234567",
+                "reason": "Core banking maintenance",
+                "holdMode": "EWS_HOLD",
+            },
+        },
+    )
 
     start_time: datetime
     end_time: datetime
     ticket_number: Annotated[str, Field(min_length=1, max_length=36)]
     reason: Annotated[str, Field(min_length=1, max_length=255)]
-    # None -> settings.default_hold_mode at the service layer.
+    # None means settings.default_hold_mode at the service layer.
     hold_mode: HoldMode | None = None
     allow_overlap: bool = False
     suppress_duplicate_payments: bool | None = None
     network_notification_id: Annotated[str, Field(min_length=1, max_length=36)] | None = None
+    # EMERGENCY_IMMEDIATE booking (vendor rules doc): the event starts within about fifteen
+    # minutes of submission; exempt from the facade's allowed-window and lead-time gates and
+    # passed through southbound verbatim.
+    emergency_immediate_start: bool | None = None
 
     @field_validator("start_time", "end_time")
     @classmethod

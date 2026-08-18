@@ -111,18 +111,31 @@ top level:
 The response field table also lists **`location`** (String, "URI of the resource", required) —
 a resource URI accompanies the created event.
 
-#### Scheduling rules (spec pp. 59–61 use cases)
+#### Scheduling rules
 
-- **`maintenanceType` is derived from lead time**: ≥ 15 days out → `MAINTENANCE_SCHEDULED`;
-  < 15 days → `EMERGENCY_SCHEDULED`; within 15 minutes of current time →
-  `EMERGENCY_IMMEDIATE` (the use case also mentions an `emergencyImmediateStart` indicator set
-  to `True` for start-now flows — not in the §3.1 field table; confirm before use).
-- **400 rejections carry an error `detail` string.** Documented details: *"Scheduled outside
-  allowed time"*, *"Maintenance event could not be created due to a scheduling conflict"*
-  (overlapping event), *"Value of ewsHold cannot be EWS_HOLD for this organization"*, and
-  *"Scheduled maintenance event exceeds the limit"*.
-- **Limit: sixty (60)** scheduled-but-not-started events per Organization.
-- Only Resellers can hold messages for a specified Organization (reseller-child rejection).
+> ✅ **Expanded 2026-08-18** from the internal rules doc *"Zelle Emergency Maintenance
+> Scheduling Rules & Constraints"* (sourced from the July 2026 Zelle Network NewsFlash),
+> plus a live CAT rejection observed the same day. Supersedes the earlier partial list.
+
+- **Allowed maintenance window (the big one):** standard AND `EMERGENCY_SCHEDULED` events
+  must fall **strictly within 11:00 PM to 5:00 AM CST / 12:00 AM to 6:00 AM CDT**. Both
+  definitions are the **same fixed 05:00 to 11:00 UTC band year-round**. Violations return
+  422 (observed live: detail *"Scheduling maintenance event outside the allowed times."*)
+  or 400 with detail *"Scheduled outside allowed time."*.
+- **`maintenanceType` is derived from lead time**: more than 15 days out is
+  `MAINTENANCE_SCHEDULED`; 15 days or less is `EMERGENCY_SCHEDULED`; within 15 minutes of
+  submission is `EMERGENCY_IMMEDIATE`, which **requires `emergencyImmediateStart: true`**
+  in the schedule request and is **completely exempt from the allowed window** (24/7).
+- **Error bodies are RFC 7807 problem details** (confirmed live 2026-08-18):
+  `{"type", "title", "status", "detail", "instance"}`. Known `detail` strings:
+  *"Scheduled outside allowed time."*, *"Start date must be less than end date"*,
+  *"Maintenance event could not be created due to a scheduling conflict."* (overlap, also
+  seen as HTTP 409), *"Scheduled maintenance event exceeds the limit."*,
+  *"Value of ewsHold cannot be EWS_HOLD for this organization."*, and
+  *"Event must be started within six (6) hours of scheduled time."*.
+- **Limit: sixty (60)** scheduled-but-unstarted events per Organization.
+- **Chronology**: start strictly before end; no historical times relative to submission.
+- Only Parent Resellers can hold messages for a child Organization (reseller restriction).
 
 ### 3.2 Activate (Start) Maintenance Event
 
@@ -140,11 +153,14 @@ MQ Hold process if configured.
 { "maintenanceEventId": "f879562c-b912-44e9-a592-71d3aef09afb" }
 ```
 
-Confirmed (spec pp. 24–25, 63–64): the 200 body is the same `maintenanceEvent` envelope with
-`status: "IN_PROGRESS"` and an `actualStartDate`. Validations: `maintenanceEventId` must exist.
-Start-window rules: *"Event must be started within six (6) hours of scheduled time"* (400 with
-that detail otherwise); an event with no actual start a day or more after its scheduled start
-is set to **`NO_SHOW`** by EWS.
+Confirmed (spec pp. 24–25, 63–64; rules doc 2026-08-18): the 200 body is the same
+`maintenanceEvent` envelope with `status: "IN_PROGRESS"` and an `actualStartDate`.
+Validations: `maintenanceEventId` must exist. Start-window rule (the 6-hour gate): the start
+call must land within six (6) hours of the scheduled start, **early or late** — outside that
+margin returns 422/400 with *"Event must be started within six (6) hours of scheduled
+time."*. An event whose window expires with no start is set to **`NO_SHOW`** by EWS; the
+rules doc also names a **`/no-show` endpoint** for formally updating such events (422 unless
+the scheduled end date is in the past) — no path/body spec seen; confirm before use.
 
 ### 3.3 Deactivate (Complete) Maintenance Event
 
@@ -214,6 +230,16 @@ Response body — plural `maintenanceEvents` array of full event objects:
 
 Completed entries additionally carry `actualStartDate` / `actualEndDate`.
 
+> ⚠️ **Date handling on reads (July 2026 NewsFlash, transcribed 2026-08-18):** ZOMS stores
+> all times in UTC, and GET responses return **date-only values** (e.g. `2020-04-03`) with
+> **no time component**. The stored UTC date can roll past midnight versus the local date
+> the participant entered, so lookups by date should use a **two-day `dateFrom`/`dateTo`
+> range**. The NewsFlash example writes the range boundaries as `MMDDYYYY`
+> (`07062026-07072026`) — confirm the actual wire format with EWS before relying on it.
+> The same NewsFlash also names a per-id `GET /v1/events/{maintenanceEventId}` — which
+> contradicts both the spec pages (orgId list only) and our live CAT test (a per-id path
+> drew a 400). Treat the orgId list as the working read until EWS reconciles.
+
 ### 3.6 Count for orgId (queue depth)
 
 Confirmed (spec pp. 56–57): counts the notifications currently held for the org, by queue.
@@ -247,11 +273,23 @@ Queue names seen: `rejected-payment`, `restrict-customer`, `change-payment-statu
 
 ### Event lifecycle (confirmed vocabulary)
 
-Upstream statuses: **`NOT_STARTED`** (freshly scheduled — the spec never uses "SCHEDULED"),
-`IN_PROGRESS`, `PRE_COMPLETE` (seen only in the complete-validation list; semantics
-unconfirmed), `COMPLETE`, `CANCELLED`, `NO_SHOW` (set by EWS a day+ after a scheduled start
-with no actual start). Flow: `NOT_STARTED → IN_PROGRESS → COMPLETE`, `NOT_STARTED →
-CANCELLED` (only before start), `NOT_STARTED → NO_SHOW` (EWS-driven timeout).
+Upstream statuses (definitions confirmed 2026-08-18 by the internal rules doc):
+
+- **`NOT_STARTED`** — successfully scheduled, not yet active (the spec never uses
+  "SCHEDULED").
+- **`IN_PROGRESS`** — started; messaging queues are held and SLA exclusions are active.
+- **`PRE_COMPLETE`** — the participant triggered a **partial test release** of specific held
+  notifications while the rest stay held (via the Create Pre-complete Details operation,
+  §3.7).
+- **`COMPLETE`** — finished; all remaining held MQ messages released, normal operations
+  resume.
+- **`CANCELLED`** — cancelled by the participant before its start time.
+- **`NO_SHOW`** — set automatically (typically a day or more past the scheduled time) when
+  an event was scheduled but never activated.
+
+Flow: `NOT_STARTED` to `IN_PROGRESS` (start), to `CANCELLED` (cancel, before start only),
+or to `NO_SHOW` (EWS timeout); `IN_PROGRESS` to `PRE_COMPLETE` (test release) or straight
+to `COMPLETE`; `PRE_COMPLETE` to `COMPLETE` (complete).
 
 ## 4. OAuth2 access token flow
 
@@ -320,13 +358,14 @@ and mutual TLS (mTLS).
 
 ## 5. Open questions to confirm with EWS
 
-1. **Partially answered 2026-08-12** — schedule 400s carry an error `detail` string (see
-   §3.1); complete uses 404 (unknown id) / 422 (wrong state). Still open: the full error
-   body schema and complete error-code catalog.
-2. **Answered 2026-08-12** (spec pp. 21–52): the read is the org-scoped list
-   `GET /v1/events?orgId=...` (§3.5) — no per-id GET exists. Response schemas and the
-   status vocabulary are confirmed; success bodies wrap events in a `maintenanceEvent`
-   envelope. Remaining niggle: the exact semantics of `PRE_COMPLETE`.
+1. **Answered 2026-08-18** — error bodies are RFC 7807 problem details (confirmed live);
+   the known `detail` catalog is in §3.1. Complete uses 404 (unknown id) / 422 (wrong
+   state); most rejections are 422-or-400.
+2. **Answered 2026-08-12/18** (spec pp. 21–52 + rules doc): the working read is the
+   org-scoped list `GET /v1/events?orgId=...` (§3.5); success bodies wrap events in a
+   `maintenanceEvent` envelope; the status vocabulary and `PRE_COMPLETE` semantics are
+   confirmed. New wrinkle: the July 2026 NewsFlash names a per-id GET that our live test
+   400'd — reconcile with EWS (see §3.5 note).
 3. Does `idempotency-id` apply to `start`/`complete`/`cancel`, or only `schedule`?
 4. Must `request-id` be unique per attempt (i.e., new value on retry) while
    `idempotency-id` stays constant?
@@ -335,8 +374,12 @@ and mutual TLS (mTLS).
    open: whether mTLS is required on the token endpoint and/or the API endpoints,
    and completion of our client registration (client_id, public key, kid).
 6. Rate limits / concurrency limits, and clock-skew tolerance on JWT claims.
-7. **Answered 2026-08-12** (spec pp. 21, 59–61): the schedule response is the
-   `maintenanceEvent` envelope (§3.1). Scheduling constraints: `maintenanceType` lead-time
-   tiers (15 days / 15 minutes), overlap conflicts → 400, `ewsHold` org entitlement → 400,
-   max 60 scheduled-but-not-started events, start within 6 hours of the scheduled time,
-   `NO_SHOW` after a day without a start.
+7. **Answered 2026-08-12/18** (spec pp. 21, 59–61 + rules doc): the schedule response is
+   the `maintenanceEvent` envelope (§3.1). Scheduling constraints: the 11:00 PM to 5:00 AM
+   CST / 12:00 AM to 6:00 AM CDT allowed window (05:00 to 11:00 UTC), `maintenanceType`
+   lead-time tiers (15 days / 15 minutes, with `emergencyImmediateStart` exempting the
+   window), overlap conflicts, `ewsHold` org entitlement, max 60 scheduled-but-unstarted
+   events, the 6-hour start gate (early or late), `NO_SHOW` after an unstarted window.
+8. New (2026-08-18): the `/no-show` endpoint's path/body spec; the `dateFrom`/`dateTo` wire
+   format on the list read (the NewsFlash example reads as MMDDYYYY); and the per-id GET
+   discrepancy in §3.5.

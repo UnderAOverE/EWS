@@ -995,7 +995,7 @@ def _enriched_service(
         harness.events,
         harness.idempotency,
         harness.audit,
-        harness.zoms,  # type: ignore[arg-type]
+        harness.zoms,
         employee_lookup=lookup,
         notifications=notifications,
     )
@@ -1160,6 +1160,118 @@ async def test_failed_attempt_still_sends_notification(harness: SimpleNamespace)
     assert len(sender.sent) == 1
     _to, subject, _html = sender.sent[0]
     assert "REJECTED" in subject
+# endDef
+
+
+def _window_request(
+    *,
+    start_hour_utc: int,
+    duration_hours: float = 2.0,
+    emergency_immediate_start: bool | None = None,
+    ) -> ScheduleEventRequest:
+
+    """
+    Build a schedule request at a fixed UTC hour three days out, for the window-gate tests.
+
+    :param start_hour_utc: The UTC hour of the window start.
+    :type start_hour_utc: int
+    :param duration_hours: Window length in hours.
+    :type duration_hours: float
+    :param emergency_immediate_start: Optional EMERGENCY_IMMEDIATE indicator.
+    :type emergency_immediate_start: bool | None
+    :return: The schedule request.
+    :rtype: ScheduleEventRequest
+    """
+
+    start = (datetime.now(timezone.utc) + timedelta(days=3)).replace(
+        hour=start_hour_utc,
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
+    return ScheduleEventRequest(
+        start_time=start,
+        end_time=start + timedelta(hours=duration_hours),
+        ticket_number=TICKET,
+        reason="window gate test",
+        emergency_immediate_start=emergency_immediate_start,
+    )
+# endDef
+
+
+async def test_schedule_off_window_rejected_before_ews(harness: SimpleNamespace) -> None:
+
+    """
+    With the window gate enabled, a mid-day window is rejected 422 with the allowed hours in
+    the message, before any southbound call.
+    """
+
+    strict = harness.settings.model_copy(update={"enforce_ews_window": True})
+    service = _enriched_service(harness, None, None, settings=strict)
+    with pytest.raises(ValidationFailedError) as excinfo:
+        await service.schedule(
+            _window_request(start_hour_utc=15),
+            client_id=CLIENT_ID,
+            idempotency_key=None,
+            correlation_id="c-1",
+        )
+
+    # endWith
+
+    assert "allowed maintenance hours" in str(excinfo.value)
+    assert harness.zoms.calls == []
+# endDef
+
+
+async def test_schedule_inside_window_allowed(harness: SimpleNamespace) -> None:
+
+    """
+    A window fully inside the 05:00 to 11:00 UTC band passes the gate and schedules.
+    """
+
+    strict = harness.settings.model_copy(update={"enforce_ews_window": True})
+    service = _enriched_service(harness, None, None, settings=strict)
+    result = await service.schedule(
+        _window_request(start_hour_utc=6),
+        client_id=CLIENT_ID,
+        idempotency_key=None,
+        correlation_id="c-1",
+    )
+    assert result.status_code == 201
+# endDef
+
+
+async def test_emergency_immediate_bypasses_gates_and_reaches_wire(
+    harness: SimpleNamespace,
+    ) -> None:
+
+    """
+    emergencyImmediateStart=true skips both the window gate and the lead-time rule, and the
+    indicator reaches the southbound payload verbatim.
+    """
+
+    strict = harness.settings.model_copy(
+        update={"enforce_ews_window": True, "min_schedule_lead_days": 1},
+    )
+    service = _enriched_service(harness, None, None, settings=strict)
+    start = datetime.now(timezone.utc) + timedelta(minutes=10)
+    request = ScheduleEventRequest(
+        start_time=start,
+        end_time=start + timedelta(hours=1),
+        ticket_number=TICKET,
+        reason="incident window",
+        emergency_immediate_start=True,
+    )
+    result = await service.schedule(
+        request,
+        client_id=CLIENT_ID,
+        idempotency_key=None,
+        correlation_id="c-1",
+    )
+    assert result.status_code == 201
+    stored = await harness.events.get(result.response.event_id)
+    assert stored is not None
+    assert stored.payload_snapshot["emergencyImmediateStart"] is True
 # endDef
 
 

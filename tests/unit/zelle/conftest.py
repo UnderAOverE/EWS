@@ -93,6 +93,9 @@ def settings(signing_key_path: Path) -> ZelleSettings:
         client_id="test-client-id",
         signing_kid="kid-1",
         signing_key_path=signing_key_path,
+        # Tests schedule at arbitrary wall-clock hours; the window gate has its own
+        # dedicated tests that re-enable it via model_copy.
+        enforce_ews_window=False,
         org_id="BBO",
         participant_name="Bobs Bank of Omaha",
         submitted_name="Bob Barker",
