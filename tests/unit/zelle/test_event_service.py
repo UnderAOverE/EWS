@@ -948,18 +948,26 @@ class _RecordingSender:
 
         self.fail = fail
         self.sent: list[tuple[str, str, str]] = []
+        self.ccs: list[list[str] | None] = []
     # endDef
 
-    async def send_email(self, to: str, subject: str, html_body: str) -> None:
+    async def send_email(
+        self,
+        to: str,
+        subject: str,
+        html_body: str,
+        cc: list[str] | None = None,
+        ) -> None:
 
         """
-        Record the send or raise the configured failure.
+        Record the send (and its CC list) or raise the configured failure.
         """
 
         if self.fail:
             raise RuntimeError("smtp down")
         # endIf
         self.sent.append((to, subject, html_body))
+        self.ccs.append(cc)
     # endDef
 # endClass
 
@@ -1116,6 +1124,49 @@ async def test_schedule_minimum_lead_days_allows_far_window(
         correlation_id="c-1",
     )
     assert result.status_code == 201
+# endDef
+
+
+async def test_notification_cc_configured_is_passed(harness: SimpleNamespace) -> None:
+
+    """
+    With notification_cc configured, every notification email carries the CC list; without
+    it, the sender is called without a CC.
+    """
+
+    with_cc = harness.settings.model_copy(
+        update={"notification_cc": ["watcher@bank.com", "ops@bank.com"]},
+    )
+    sender = _RecordingSender()
+    service = _enriched_service(harness, None, sender, settings=with_cc)
+    await service.schedule(
+        _request(),
+        client_id=CLIENT_ID,
+        idempotency_key=None,
+        correlation_id="c-1",
+        sm_user="sreddy",
+    )
+    assert sender.ccs == [["watcher@bank.com", "ops@bank.com"]]
+# endDef
+
+
+async def test_notification_without_cc_omits_it(harness: SimpleNamespace) -> None:
+
+    """
+    The default (empty) notification_cc calls the sender without a CC list, keeping hosts
+    whose send_email lacks the parameter working.
+    """
+
+    sender = _RecordingSender()
+    service = _enriched_service(harness, None, sender)
+    await service.schedule(
+        _request(),
+        client_id=CLIENT_ID,
+        idempotency_key=None,
+        correlation_id="c-1",
+        sm_user="sreddy",
+    )
+    assert sender.ccs == [None]
 # endDef
 
 

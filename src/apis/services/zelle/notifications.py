@@ -77,6 +77,7 @@ class EmailSender(Protocol):
         to: str,
         subject: str,
         html_body: str,
+        cc: list[str] | None = None,
         ) -> None:
 
         """
@@ -88,6 +89,8 @@ class EmailSender(Protocol):
         :type subject: str
         :param html_body: The HTML body.
         :type html_body: str
+        :param cc: Optional CC recipient addresses.
+        :type cc: list[str] | None
         :return: None.
         :rtype: None
         """
@@ -201,13 +204,23 @@ class NotificationService:
             note=note,
             correlation_id=correlation_id,
         )
+        cc = list(self._settings.notification_cc)
         try:
-            await self._sender.send_email(recipient, subject, html_body)
+            if cc:
+                await self._sender.send_email(recipient, subject, html_body, cc=cc)
+            else:
+                # Positional-only call keeps hosts without a cc parameter working until
+                # someone actually configures ZELLE_NOTIFICATION_CC.
+                await self._sender.send_email(recipient, subject, html_body)
+
+            # endIfElse
+
             logger.info(
-                "notification sent: action=%s status=%s to=%s event_id=%s",
+                "notification sent: action=%s status=%s to=%s cc_count=%d event_id=%s",
                 action,
                 status,
                 _mask_email(recipient),
+                len(cc),
                 event_id,
             )
         except Exception as exc:  # Best-effort by contract: mail must never break the API call.

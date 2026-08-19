@@ -55,6 +55,9 @@ src/apis/services/zelle/__init__.py           (slice C)
 src/apis/services/zelle/token_broker.py       (slice C)  CircuitBreaker, TokenBroker
 src/apis/services/zelle/zoms_client.py        (slice C)  ZomsClient
 src/apis/services/zelle/notifications.py      (slice D)  EmailSender, NotificationService
+                                              (send_email(to, subject, html_body, cc=None);
+                                              cc filled from settings.notification_cc,
+                                              omitted from the call when unconfigured)
 src/common/employee_directory.py              (mirror)   EmployeeRecord, EmployeeDirectoryClient
 src/apis/services/zelle/event_service.py      (slice D)  EventService
 src/apis/services/zelle/watchdog.py           (slice D)  Watchdog

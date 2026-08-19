@@ -218,6 +218,10 @@ class ZelleSettings(BaseSettings):
     ews_window_end_utc_hour: int = 11
     # Master switch for the per-attempt rich-HTML notification emails.
     notification_emails_enabled: bool = True
+    # Additional CC recipients on every notification email (an ops mailbox, or yourself in
+    # CAT). Env ZELLE_NOTIFICATION_CC takes a JSON list, matching the allowlist convention:
+    # ["ops@bank.com", "you@bank.com"]. Empty means no CC.
+    notification_cc: list[str] = []
     # Timeouts / broker.
     token_connect_timeout_seconds: float = 3.0
     token_read_timeout_seconds: float = 7.0
