@@ -1504,6 +1504,8 @@ class EventService:
             requested_by=sm_user,
             note=contact.source_note,
             correlation_id=correlation_id,
+            reason=record.reason,
+            hold_mode=record.hold_mode.value,
         )
     # endDef
 

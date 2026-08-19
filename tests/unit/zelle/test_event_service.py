@@ -1047,8 +1047,8 @@ async def test_schedule_enriches_contact_block_from_directory(
     assert len(sender.sent) == 1
     to, subject, html = sender.sent[0]
     assert to == "sreddy@bank.com"
-    assert "SCHEDULE" in subject
-    assert "SCHEDULED" in subject
+    assert "SUCCESS" in subject
+    assert "Maintenance window scheduled" in subject
     assert "sreddy" in html
 # endDef
 
@@ -1210,6 +1210,7 @@ async def test_failed_attempt_still_sends_notification(harness: SimpleNamespace)
     # endWith
     assert len(sender.sent) == 1
     _to, subject, _html = sender.sent[0]
+    assert "FAILED" in subject
     assert "REJECTED" in subject
 # endDef
 
@@ -1356,8 +1357,8 @@ async def test_lifecycle_attempt_sends_notification(harness: SimpleNamespace) ->
     assert len(sender.sent) == 1
     to, subject, _html = sender.sent[0]
     assert to == "sreddy@bank.com"
-    assert "START" in subject
-    assert "IN_PROGRESS" in subject
+    assert "SUCCESS" in subject
+    assert "Maintenance started" in subject
 # endDef
 
 
